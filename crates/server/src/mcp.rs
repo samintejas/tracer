@@ -32,7 +32,7 @@ fn tools() -> Value {
       {"name": "list_transactions", "description": "Search transactions you can see, newest first, with a total for paging. accounts is a comma separated list of account ids; kinds is debit, credit and/or transfer; tags matches any.",
        "inputSchema": {"type": "object", "properties": {
          "q": {"type": "string", "description": "substring of description, note or a tag"}, "account_id": id, "accounts": s, "member_id": id,
-         "kinds": s, "tags": s, "from": date, "to": date, "sort": {"type": "string", "enum": ["date", "description", "amount"]},
+         "kinds": s, "tags": s, "collapse_transfers": {"type": "boolean", "description": "show each transfer once"}, "from": date, "to": date, "sort": {"type": "string", "enum": ["date", "description", "amount"]},
          "dir": {"type": "string", "enum": ["asc", "desc"]}, "limit": id, "offset": id}}},
       {"name": "add_transaction", "description": format!("Record money out (debit) or in (credit) on an account you own. A credit-card purchase is a debit on the card and raises what is owed. To move money between accounts, or pay a card or loan, use transfer_money instead. {NOTE}"),
        "inputSchema": {"type": "object", "required": ["account_id", "kind", "amount"], "properties": {

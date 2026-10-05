@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Builds the web app into ./dist, which `tracer serve` serves (--ui-dir ui/dist).
+# Needs: rustup target add wasm32-unknown-unknown, and a wasm-bindgen CLI matching ui/Cargo.lock
+#   cargo install wasm-bindgen-cli --version "$(grep -A1 'name = "wasm-bindgen"' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')" --locked
+set -eu
+cd "$(dirname "$0")"
+PROFILE=${PROFILE:-release}
+if [ "$PROFILE" = release ]; then cargo build --target wasm32-unknown-unknown --release; else cargo build --target wasm32-unknown-unknown; fi
+rm -rf dist && mkdir -p dist/fonts
+wasm-bindgen --target web --no-typescript --out-dir dist --out-name tracer-ui \
+  target/wasm32-unknown-unknown/$PROFILE/tracer-ui.wasm
+command -v wasm-opt >/dev/null && wasm-opt -Oz -o dist/tracer-ui_bg.wasm dist/tracer-ui_bg.wasm || true
+cp ../../dots-design/assets/fonts/*.woff2 dist/fonts/
+# cache-bust by content
+V=$(cat dist/tracer-ui_bg.wasm | cksum | cut -d' ' -f1)
+sed "s/__V__/$V/g" index.html > dist/index.html
+ls -lh dist | sed 's/^/  /'

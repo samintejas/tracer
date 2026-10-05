@@ -1,0 +1,29 @@
+[package]
+name = "tracer-ui"
+version = "0.1.0"
+edition = "2024"
+description = "tracer/fin web app: Leptos (client side) on the dots design system."
+
+# its own workspace and lockfile: this crate is built for wasm, the rest of the repo is not
+[workspace]
+
+[dependencies]
+tracer-api = { path = "../crates/api" }
+dots-design = { path = "../../dots-design", features = ["csr"] }
+leptos = { version = "0.8.21", features = ["csr"] }
+leptos_router = "0.8"
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Location", "File", "FileList", "Blob", "BlobPropertyBag", "Url", "HtmlInputElement", "HtmlAnchorElement", "Navigator", "Clipboard", "Response", "RequestInit", "Headers", "Request"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

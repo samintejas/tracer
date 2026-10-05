@@ -35,6 +35,9 @@ impl Store {
             }
             qb.push(")");
         }
+        if f.collapse_transfers == Some(true) {
+            qb.push(" AND NOT (t.kind = 'transfer' AND t.amount > 0)");
+        }
         if let Some(m) = f.member_id {
             qb.push(" AND t.created_by = ").push_bind(m);
         }

@@ -340,7 +340,7 @@ pub struct UpdateTransaction {
     pub account_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TxFilter {
     pub account_id: Option<i64>,
     /// Comma separated account ids.
@@ -355,6 +355,8 @@ pub struct TxFilter {
     pub to: Option<String>,
     /// Substring of description, note or a tag.
     pub q: Option<String>,
+    /// Show each transfer once (its outgoing leg) instead of as two rows.
+    pub collapse_transfers: Option<bool>,
     /// `date`, `description`, `amount` (default `date`)
     pub sort: Option<String>,
     /// `asc` or `desc` (default `desc`)
