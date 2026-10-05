@@ -1,0 +1,21 @@
+[package]
+name = "tracer-core"
+description = "tracer's business logic over SQLite: the one place rules live, used by the CLI, REST and MCP front ends."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracer-api = { path = "../api" }
+serde.workspace = true
+serde_json.workspace = true
+argon2 = "0.5"
+chrono = "0.4"
+hex = "0.4"
+rand = "0.10"
+sha2 = "0.11"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,7 @@
+/target
+/ui/target
+/ui/dist
+*.db
+*.db-shm
+*.db-wal
+.playwright-mcp

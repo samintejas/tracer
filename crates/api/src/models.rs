@@ -1,0 +1,486 @@
+use serde::{Deserialize, Serialize};
+
+use crate::loan::LoanCalc;
+use crate::money;
+
+// ---- people --------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct User {
+    pub id: i64,
+    pub name: String,
+    pub email: String,
+    pub initials: String,
+    #[serde(default)]
+    pub phone: String,
+    /// `inr`, `usd` or `eur`: how amounts are written. The stored numbers do not change.
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Member {
+    pub id: i64,
+    pub name: String,
+    pub initials: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Family {
+    pub id: i64,
+    pub name: String,
+    pub invite_code: String,
+    pub members: Vec<Member>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Me {
+    #[serde(flatten)]
+    pub user: User,
+    pub family: Option<Family>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignUp {
+    pub name: String,
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SignIn {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub token: String,
+    pub user: User,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateProfile {
+    pub name: Option<String>,
+    pub initials: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangePassword {
+    pub current: String,
+    pub new: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewFamily {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JoinFamily {
+    pub code: String,
+}
+
+// ---- accounts ------------------------------------------------------------------------------------------
+
+pub const ACCOUNT_KINDS: [&str; 4] = ["bank", "credit", "loan", "investment"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountKind {
+    Bank,
+    Credit,
+    Loan,
+    Investment,
+}
+
+impl AccountKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountKind::Bank => "bank",
+            AccountKind::Credit => "credit",
+            AccountKind::Loan => "loan",
+            AccountKind::Investment => "investment",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "bank" => AccountKind::Bank,
+            "credit" => AccountKind::Credit,
+            "loan" => AccountKind::Loan,
+            "investment" => AccountKind::Investment,
+            _ => return None,
+        })
+    }
+
+    /// Money you owe rather than money you hold.
+    pub fn is_liability(self) -> bool {
+        matches!(self, AccountKind::Credit | AccountKind::Loan)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Only its owners see it.
+    #[default]
+    Private,
+    /// Everyone in the owner's family sees it, only owners change it.
+    Shared,
+}
+
+impl Visibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Visibility::Private => "private",
+            Visibility::Shared => "shared",
+        }
+    }
+}
+
+/// Kind-specific fields. Each kind uses its own and ignores the rest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountDetails {
+    #[serde(default)]
+    pub institution: String,
+    #[serde(default)]
+    pub last4: String,
+    /// credit: the limit
+    #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// credit: statement day of month; loan and sip: day of month an instalment leaves
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_day: Option<u32>,
+    /// credit: payment due day of month
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_day: Option<u32>,
+    /// loan: principal borrowed
+    #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
+    pub loan_total: Option<i64>,
+    /// loan: annual rate in percent
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    /// loan: months
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenure: Option<u32>,
+    /// loan: `YYYY-MM` of the first instalment
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    /// loan: the lender's instalment when known, else computed
+    #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
+    pub emi: Option<i64>,
+    /// loan: day of month the emi leaves
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emi_day: Option<u32>,
+    /// investment: `mutual fund`, `ppf`, `fixed deposit`, …
+    #[serde(default)]
+    pub invest_kind: String,
+    /// investment: what you have put in
+    #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
+    pub invested: Option<i64>,
+    #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
+    pub sip: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub id: i64,
+    pub name: String,
+    pub kind: AccountKind,
+    pub owners: Vec<Member>,
+    /// More than one owner.
+    pub joint: bool,
+    pub visibility: Visibility,
+    /// What you hold, or what you owe for credit and loan. Never negative for a healthy account; a bank
+    /// overdraft shows negative. Derived, never stored: opening balance plus transactions (a loan's
+    /// balance comes from its schedule).
+    #[serde(with = "money::val")]
+    pub balance: i64,
+    #[serde(flatten)]
+    pub details: AccountDetails,
+    /// Schedule figures for a loan with enough details.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loan: Option<LoanCalc>,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewAccount {
+    pub name: String,
+    pub kind: AccountKind,
+    /// What you hold now, or owe now for credit. Ignored for loans (they have a schedule).
+    #[serde(default, with = "money::opt")]
+    pub balance: Option<i64>,
+    #[serde(default)]
+    pub visibility: Visibility,
+    /// Extra owners besides the caller (family members only). Two or more owners make it joint.
+    #[serde(default)]
+    pub owner_ids: Vec<i64>,
+    #[serde(flatten)]
+    pub details: AccountDetails,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateAccount {
+    pub name: Option<String>,
+    pub visibility: Option<Visibility>,
+    pub owner_ids: Option<Vec<i64>>,
+    pub archived: Option<bool>,
+    #[serde(default, with = "money::opt")]
+    pub balance: Option<i64>,
+    #[serde(flatten)]
+    pub details: Option<AccountDetails>,
+}
+
+// ---- transactions --------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TxKind {
+    /// Money out.
+    Debit,
+    /// Money in.
+    Credit,
+    /// One leg of a move between two of your accounts.
+    Transfer,
+}
+
+impl TxKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TxKind::Debit => "debit",
+            TxKind::Credit => "credit",
+            TxKind::Transfer => "transfer",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "debit" => TxKind::Debit,
+            "credit" => TxKind::Credit,
+            "transfer" => TxKind::Transfer,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: i64,
+    pub name: String,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transaction {
+    pub id: i64,
+    pub account_id: i64,
+    pub kind: TxKind,
+    /// Signed from the account's side: money out is negative.
+    #[serde(with = "money::val")]
+    pub amount: i64,
+    /// `YYYY-MM-DD`
+    pub date: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+    /// The other account of a transfer.
+    pub counterpart_id: Option<i64>,
+    pub transfer_id: Option<i64>,
+    pub created_by: Member,
+    pub attachments: Vec<Attachment>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewTransaction {
+    pub account_id: i64,
+    /// `debit` or `credit`; use a transfer to move money between accounts.
+    pub kind: TxKind,
+    /// Positive; the kind decides the direction.
+    #[serde(with = "money::val")]
+    pub amount: i64,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewTransfer {
+    pub from_account_id: i64,
+    pub to_account_id: i64,
+    #[serde(with = "money::val")]
+    pub amount: i64,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateTransaction {
+    #[serde(default, with = "money::opt")]
+    pub amount: Option<i64>,
+    pub date: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub note: Option<String>,
+    pub account_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TxFilter {
+    pub account_id: Option<i64>,
+    /// Comma separated account ids.
+    pub accounts: Option<String>,
+    /// Only transactions someone in this member created.
+    pub member_id: Option<i64>,
+    /// Comma separated kinds: `debit,credit,transfer`.
+    pub kinds: Option<String>,
+    /// Comma separated tags; a transaction matches when it has any.
+    pub tags: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Substring of description, note or a tag.
+    pub q: Option<String>,
+    /// `date`, `description`, `amount` (default `date`)
+    pub sort: Option<String>,
+    /// `asc` or `desc` (default `desc`)
+    pub dir: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxPage {
+    pub items: Vec<Transaction>,
+    /// Total matching the filter, ignoring limit and offset.
+    pub total: i64,
+}
+
+// ---- insights ------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CategoryTotal {
+    pub tag: String,
+    #[serde(with = "money::val")]
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonthFlow {
+    /// `YYYY-MM`
+    pub month: String,
+    #[serde(with = "money::val")]
+    pub income: i64,
+    #[serde(with = "money::val")]
+    pub spending: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DayTotal {
+    pub date: String,
+    #[serde(with = "money::val")]
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Due {
+    /// `YYYY-MM-DD`
+    pub date: String,
+    pub label: String,
+    pub account_id: i64,
+    #[serde(with = "money::val")]
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Insights {
+    #[serde(with = "money::val")]
+    pub assets: i64,
+    #[serde(with = "money::val")]
+    pub owed: i64,
+    #[serde(with = "money::val")]
+    pub income: i64,
+    #[serde(with = "money::val")]
+    pub spending: i64,
+    /// Spending by tag over the window, biggest first. Investments and transfers are not spending.
+    pub categories: Vec<CategoryTotal>,
+    /// The last six months.
+    pub months: Vec<MonthFlow>,
+    /// Daily spending for the last four weeks.
+    pub days: Vec<DayTotal>,
+    pub dues: Vec<Due>,
+    pub loans: Vec<Account>,
+    pub investments: Vec<Account>,
+    pub accounts: Vec<Account>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InsightsQuery {
+    /// A member id to look at one person; absent is everyone you can see.
+    pub member_id: Option<i64>,
+    /// Window in days for the category totals, default 30.
+    pub days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ask {
+    pub question: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Answer {
+    pub answer: String,
+}
+
+// ---- notifications, connectors -------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: i64,
+    pub text: String,
+    pub created_at: String,
+    pub read: bool,
+}
+
+pub const SCOPES: [&str; 4] = ["read", "transactions", "add", "edit"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Connector {
+    pub id: i64,
+    pub name: String,
+    /// What the token may do: `read` accounts and insights, read `transactions`, `add` them, `edit` or
+    /// delete them.
+    pub scopes: Vec<String>,
+    /// Last four characters of the token, to tell tokens apart.
+    pub tail: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewConnector {
+    pub name: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedConnector {
+    /// Shown once. Only its hash is stored.
+    pub token: String,
+    pub connector: Connector,
+}
