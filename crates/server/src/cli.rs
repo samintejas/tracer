@@ -10,8 +10,8 @@ use tracer_core::{Caller, Error, Store};
 #[derive(Parser)]
 #[command(name = "tracer", version, about = "tracer/fin: a household money tracker (CLI, REST and MCP in one binary)")]
 pub struct Cli {
-    /// SQLite database.
-    #[arg(long, global = true, env = "TRACER_DB", default_value = "sqlite://tracer.db")]
+    /// Postgres database. The default is the one `docker compose up -d` starts.
+    #[arg(long, global = true, env = "TRACER_DB", default_value = tracer_core::DEFAULT_DB, hide_env_values = true)]
     pub db: String,
     /// Act as this person (their email). Not needed when there is only one user.
     #[arg(long = "as", global = true, env = "TRACER_USER")]
@@ -117,7 +117,7 @@ pub struct NewAcct {
     /// Let your family see it.
     #[arg(long)]
     pub shared: bool,
-    /// Co-owner emails (family members): makes it a joint account.
+    /// Co-owner emails (family members): makes a bank account joint.
     #[arg(long = "with", value_delimiter = ',')]
     pub with: Vec<String>,
     #[arg(long)]

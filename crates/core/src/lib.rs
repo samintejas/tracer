@@ -11,8 +11,8 @@ mod transactions;
 
 use std::str::FromStr;
 
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub use error::{Error, Result};
 pub use tracer_api as api;
@@ -20,7 +20,7 @@ pub use tracer_api as api;
 /// The database and every operation on it.
 #[derive(Clone)]
 pub struct Store {
-    pub(crate) pool: SqlitePool,
+    pub(crate) pool: PgPool,
 }
 
 /// Who is acting and what they may do. A web session may do anything; a connector token only its scopes.
@@ -57,22 +57,53 @@ impl Caller {
     }
 }
 
+/// Where the database is when nothing says otherwise: the one `docker compose up -d` starts.
+pub const DEFAULT_DB: &str = "postgres://tracer:tracer@localhost:5432/tracer";
+
 impl Store {
-    /// Open (creating if missing) a SQLite file or `sqlite::memory:` and run migrations.
+    /// Connect to Postgres (`postgres://user:pass@host:port/db`) and bring the schema up to date.
     pub async fn open(url: &str) -> Result<Store> {
-        let opts = SqliteConnectOptions::from_str(url)
-            .map_err(|e| Error::bad(format!("bad database url: {e}")))?
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
-        let max = if url.contains(":memory:") { 1 } else { 5 };
-        let pool = SqlitePoolOptions::new().max_connections(max).connect_with(opts).await?;
+        let opts = PgConnectOptions::from_str(url).map_err(|e| Error::bad(format!("bad database url: {e}")))?;
+        Store::connect(opts, 10).await
+    }
+
+    async fn connect(opts: PgConnectOptions, max: u32) -> Result<Store> {
+        let pool = PgPoolOptions::new()
+            .max_connections(max)
+            .connect_with(opts)
+            .await
+            .map_err(|e| Error::Internal(format!("cannot reach the database: {e}. is it running? (docker compose up -d)")))?;
         sqlx::migrate!("./migrations").run(&pool).await.map_err(|e| Error::Internal(format!("migration failed: {e}")))?;
         Ok(Store { pool })
     }
 
-    pub async fn memory() -> Result<Store> {
-        Store::open("sqlite::memory:").await
+    /// A store of its own for one test: a fresh schema in the database at `TRACER_TEST_DB` (default: the
+    /// compose one). Schemas left by runs more than ten minutes old are dropped on the way.
+    pub async fn test() -> Result<Store> {
+        use sqlx::Row;
+        let url = std::env::var("TRACER_TEST_DB").unwrap_or_else(|_| DEFAULT_DB.into());
+        let base = PgConnectOptions::from_str(&url).map_err(|e| Error::bad(format!("bad database url: {e}")))?;
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(base.clone())
+            .await
+            .map_err(|e| Error::Internal(format!("tests need postgres: {e}. start it with: docker compose up -d")))?;
+        let now = chrono::Utc::now().timestamp();
+        let old = sqlx::query("SELECT nspname FROM pg_namespace WHERE nspname LIKE 'test\\_%'").fetch_all(&admin).await?;
+        for r in old {
+            let name: String = r.get(0);
+            let born: i64 = name.split('_').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            if now - born > 600 {
+                // the name came from the catalog and matches test_<digits>_<hex>
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA IF EXISTS \"{name}\" CASCADE"))).execute(&admin).await;
+            }
+        }
+        let mut raw = [0u8; 6];
+        rand::fill(&mut raw);
+        let schema = format!("test_{now}_{}", hex::encode(raw));
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA \"{schema}\""))).execute(&admin).await?;
+        admin.close().await;
+        Store::connect(base.options([("search_path", schema.as_str())]), 3).await
     }
 }
 

@@ -6,11 +6,11 @@ use sqlx::{AssertSqlSafe, Row};
 use crate::api::*;
 use crate::{Caller, Error, Result, Store, clean, today, visible};
 
-fn opt_i(r: &sqlx::sqlite::SqliteRow, col: &str) -> Option<i64> {
+fn opt_i(r: &sqlx::postgres::PgRow, col: &str) -> Option<i64> {
     r.get::<Option<i64>, _>(col)
 }
 
-fn details_from(r: &sqlx::sqlite::SqliteRow) -> AccountDetails {
+fn details_from(r: &sqlx::postgres::PgRow) -> AccountDetails {
     AccountDetails {
         institution: r.get("institution"),
         last4: r.get("last4"),
@@ -60,7 +60,7 @@ fn validate(kind: AccountKind, d: &AccountDetails) -> Result<()> {
 impl Store {
     /// Raw sum of transactions per account.
     async fn tx_sums(&self) -> Result<HashMap<i64, i64>> {
-        let rows = sqlx::query("SELECT account_id, SUM(amount) AS s FROM transactions GROUP BY account_id").fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT account_id, SUM(amount)::BIGINT AS s FROM transactions GROUP BY account_id").fetch_all(&self.pool).await?;
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
@@ -77,7 +77,7 @@ impl Store {
 
     async fn load_accounts(&self, user_id: i64, only: Option<i64>, include_archived: bool) -> Result<Vec<Account>> {
         let sql = format!(
-            "SELECT a.* FROM accounts a WHERE {} AND (?1 IS NULL OR a.id = ?1) AND (?2 = 1 OR a.archived = 0) ORDER BY a.id",
+            "SELECT a.* FROM accounts a WHERE {} AND ($1 IS NULL OR a.id = $1) AND ($2 = 1 OR a.archived = 0) ORDER BY a.id",
             visible(user_id)
         );
         let rows = sqlx::query(AssertSqlSafe(sql)).bind(only).bind(include_archived as i64).fetch_all(&self.pool).await?;
@@ -149,8 +149,8 @@ impl Store {
         self.load_accounts(user_id, Some(id), true).await?.into_iter().next().ok_or(Error::NotFound("account"))
     }
 
-    /// Co-owners must be in the caller's family.
-    async fn check_owners(&self, c: &Caller, owner_ids: &[i64]) -> Result<Vec<i64>> {
+    /// Only a bank account can be joint, and its co-owners must be in the caller's family.
+    async fn check_owners(&self, c: &Caller, kind: AccountKind, owner_ids: &[i64]) -> Result<Vec<i64>> {
         let mut all = vec![c.user_id];
         for id in owner_ids {
             if !all.contains(id) {
@@ -158,6 +158,9 @@ impl Store {
             }
         }
         if all.len() > 1 {
+            if kind != AccountKind::Bank {
+                return Err(Error::bad("only a bank account can be joint. share this one with the family instead"));
+            }
             let fam = self.family(c.user_id).await?.ok_or_else(|| Error::bad("create or join a family to share an account with someone"))?;
             for id in &all {
                 if !fam.members.iter().any(|m| m.id == *id) {
@@ -175,7 +178,7 @@ impl Store {
             return Err(Error::bad("name the account"));
         }
         validate(b.kind, &b.details)?;
-        let owners = self.check_owners(c, &b.owner_ids).await?;
+        let owners = self.check_owners(c, b.kind, &b.owner_ids).await?;
         let shown = b.balance.unwrap_or(0);
         let opening = match b.kind {
             AccountKind::Credit => -shown,
@@ -185,7 +188,7 @@ impl Store {
         let d = &b.details;
         let id = sqlx::query(
             "INSERT INTO accounts (name, kind, visibility, opening, institution, last4, credit_limit, statement_day, due_day, \
-             loan_total, rate, tenure, start, emi, emi_day, invest_kind, invested, sip, sip_day) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             loan_total, rate, tenure, start, emi, emi_day, invest_kind, invested, sip, sip_day) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
         )
         .bind(&name)
         .bind(b.kind.as_str())
@@ -194,23 +197,23 @@ impl Store {
         .bind(clean(&d.institution).to_lowercase())
         .bind(clean(&d.last4))
         .bind(d.limit)
-        .bind(d.statement_day)
-        .bind(d.due_day)
+        .bind(d.statement_day.map(i64::from))
+        .bind(d.due_day.map(i64::from))
         .bind(d.loan_total)
         .bind(d.rate)
-        .bind(d.tenure)
+        .bind(d.tenure.map(i64::from))
         .bind(d.start.as_deref())
         .bind(d.emi)
-        .bind(d.emi_day)
+        .bind(d.emi_day.map(i64::from))
         .bind(clean(&d.invest_kind).to_lowercase())
         .bind(d.invested)
         .bind(d.sip)
-        .bind(d.sip_day)
-        .execute(&self.pool)
+        .bind(d.sip_day.map(i64::from))
+        .fetch_one(&self.pool)
         .await?
-        .last_insert_rowid();
+        .get::<i64, _>(0);
         for o in &owners {
-            sqlx::query("INSERT INTO account_owners (account_id, user_id) VALUES (?, ?)").bind(id).bind(o).execute(&self.pool).await?;
+            sqlx::query("INSERT INTO account_owners (account_id, user_id) VALUES ($1, $2)").bind(id).bind(o).execute(&self.pool).await?;
         }
         self.account_unchecked(c.user_id, id).await
     }
@@ -226,12 +229,12 @@ impl Store {
     pub(crate) async fn remove_account(&self, id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE transactions SET kind = CASE WHEN amount < 0 THEN 'debit' ELSE 'credit' END, transfer_id = NULL \
-             WHERE account_id <> ?1 AND transfer_id IN (SELECT transfer_id FROM transactions WHERE account_id = ?1 AND transfer_id IS NOT NULL)",
+             WHERE account_id <> $1 AND transfer_id IN (SELECT transfer_id FROM transactions WHERE account_id = $1 AND transfer_id IS NOT NULL)",
         )
         .bind(id)
         .execute(&self.pool)
         .await?;
-        sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(id).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -242,19 +245,19 @@ impl Store {
             if clean(n).is_empty() {
                 return Err(Error::bad("name the account"));
             }
-            sqlx::query("UPDATE accounts SET name = ? WHERE id = ?").bind(clean(n).to_lowercase()).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE accounts SET name = $1 WHERE id = $2").bind(clean(n).to_lowercase()).bind(id).execute(&self.pool).await?;
         }
         if let Some(v) = b.visibility {
-            sqlx::query("UPDATE accounts SET visibility = ? WHERE id = ?").bind(v.as_str()).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE accounts SET visibility = $1 WHERE id = $2").bind(v.as_str()).bind(id).execute(&self.pool).await?;
         }
         if let Some(arch) = b.archived {
-            sqlx::query("UPDATE accounts SET archived = ? WHERE id = ?").bind(arch as i64).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE accounts SET archived = $1 WHERE id = $2").bind(arch as i64).bind(id).execute(&self.pool).await?;
         }
         if let Some(ids) = &b.owner_ids {
-            let owners = self.check_owners(c, ids).await?;
-            sqlx::query("DELETE FROM account_owners WHERE account_id = ?").bind(id).execute(&self.pool).await?;
+            let owners = self.check_owners(c, a.kind, ids).await?;
+            sqlx::query("DELETE FROM account_owners WHERE account_id = $1").bind(id).execute(&self.pool).await?;
             for o in owners {
-                sqlx::query("INSERT INTO account_owners (account_id, user_id) VALUES (?, ?)").bind(id).bind(o).execute(&self.pool).await?;
+                sqlx::query("INSERT INTO account_owners (account_id, user_id) VALUES ($1, $2)").bind(id).bind(o).execute(&self.pool).await?;
             }
         }
         if let Some(target) = b.balance {
@@ -265,30 +268,30 @@ impl Store {
                 AccountKind::Loan => return Err(Error::bad("a loan's balance comes from its schedule: change the details instead")),
                 _ => target - sum,
             };
-            sqlx::query("UPDATE accounts SET opening = ? WHERE id = ?").bind(opening).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE accounts SET opening = $1 WHERE id = $2").bind(opening).bind(id).execute(&self.pool).await?;
         }
         if let Some(d) = &b.details {
             let merged = merge_details(&a.details, d);
             validate(a.kind, &merged)?;
             sqlx::query(
-                "UPDATE accounts SET institution=?, last4=?, credit_limit=?, statement_day=?, due_day=?, loan_total=?, rate=?, tenure=?, \
-                 start=?, emi=?, emi_day=?, invest_kind=?, invested=?, sip=?, sip_day=? WHERE id = ?",
+                "UPDATE accounts SET institution=$1, last4=$2, credit_limit=$3, statement_day=$4, due_day=$5, loan_total=$6, rate=$7, tenure=$8, \
+                 start=$9, emi=$10, emi_day=$11, invest_kind=$12, invested=$13, sip=$14, sip_day=$15 WHERE id = $16",
             )
             .bind(&merged.institution)
             .bind(&merged.last4)
             .bind(merged.limit)
-            .bind(merged.statement_day)
-            .bind(merged.due_day)
+            .bind(merged.statement_day.map(i64::from))
+            .bind(merged.due_day.map(i64::from))
             .bind(merged.loan_total)
             .bind(merged.rate)
-            .bind(merged.tenure)
+            .bind(merged.tenure.map(i64::from))
             .bind(merged.start.as_deref())
             .bind(merged.emi)
-            .bind(merged.emi_day)
+            .bind(merged.emi_day.map(i64::from))
             .bind(&merged.invest_kind)
             .bind(merged.invested)
             .bind(merged.sip)
-            .bind(merged.sip_day)
+            .bind(merged.sip_day.map(i64::from))
             .bind(id)
             .execute(&self.pool)
             .await?;

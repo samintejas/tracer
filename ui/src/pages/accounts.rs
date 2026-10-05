@@ -205,6 +205,8 @@ struct Form {
     sip: RwSignal<String>,
     sip_day: RwSignal<String>,
     visibility: RwSignal<String>,
+    /// Family members who own it with you. Bank accounts only: any co-owner makes it a joint account.
+    co_owners: RwSignal<Vec<i64>>,
 }
 
 struct Field {
@@ -217,7 +219,7 @@ struct Field {
 }
 
 impl Form {
-    fn new(a: Option<&Account>) -> Self {
+    fn new(a: Option<&Account>, me: i64) -> Self {
         let d = a.map(|a| a.details.clone()).unwrap_or_default();
         let s = |v: String| RwSignal::new(v);
         let m = |v: Option<i64>| RwSignal::new(v.map(fmt::plain).unwrap_or_default());
@@ -241,6 +243,7 @@ impl Form {
             sip: m(d.sip),
             sip_day: n(d.sip_day),
             visibility: s(a.map(|a| a.visibility.as_str().to_string()).unwrap_or_else(|| "private".into())),
+            co_owners: RwSignal::new(a.map(|a| a.owners.iter().map(|o| o.id).filter(|o| *o != me).collect()).unwrap_or_default()),
         }
     }
 
@@ -319,9 +322,21 @@ impl Form {
                     row("monthly sip", if sip > 0 { format!("{}{}", app.money(sip), day.map(|d| format!(" on the {}", fmt::ordinal(d))).unwrap_or_default()) } else { "none".into() }),
                 ]
             }
-            "joint" => vec![row("opening balance", app.money(num(self.balance))), row("who sees it", "everyone who owns it".into())],
-            _ => vec![row("opening balance", app.money(num(self.balance))), row("who sees it", if self.visibility.get() == "shared" { "the family".into() } else { "only you".into() })],
+            _ => vec![row("opening balance", app.money(num(self.balance)))],
         }
+        .into_iter()
+        .chain(std::iter::once(row("who sees it", self.seen_by(app))))
+        .collect()
+    }
+
+    /// `you and vikram`, `the family` or `only you`.
+    fn seen_by(&self, app: &AppState) -> String {
+        let with = self.co_owners.get();
+        if !with.is_empty() {
+            let names: Vec<String> = app.members().into_iter().filter(|m| with.contains(&m.id)).map(|m| m.name.split(' ').next().unwrap_or("").to_string()).collect();
+            return format!("you and {}", names.join(" and "));
+        }
+        if self.visibility.get() == "shared" { "the family".into() } else { "only you".into() }
     }
 
     fn note(kind: &str) -> &'static str {
@@ -334,8 +349,14 @@ impl Form {
     }
 
     /// The request body: only what this kind uses, amounts as decimal strings.
-    fn body(&self, kind: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    fn body(&self, kind: &str, set_owners: bool) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let mut o = serde_json::Map::new();
+        if set_owners {
+            if kind == "joint" && self.co_owners.get_untracked().is_empty() {
+                return Err("a joint account needs at least one other owner: tick who it is joint with".into());
+            }
+            o.insert("owner_ids".into(), self.co_owners.get_untracked().into());
+        }
         let name = self.name.get_untracked().trim().to_lowercase();
         if name.is_empty() {
             return Err("give the account a name".into());
@@ -432,6 +453,29 @@ fn Fields(form: Form, kind: String, #[prop(into)] name_hint: String, id: &'stati
     }
 }
 
+/// "joint with": tick the family members who own the account with you.
+#[component]
+fn Owners(form: Form) -> impl IntoView {
+    let app = expect_context::<AppState>();
+    let others = move || app.members().into_iter().filter(|m| m.id != app.my_id()).collect::<Vec<_>>();
+    view! {
+        <fieldset class="d-field" style="margin:0;padding:0;border:0;min-width:0">
+            <legend class="d-label" style="padding:0">"joint with"</legend>
+            {move || others().into_iter().map(|m| {
+                let id = m.id;
+                view! {
+                    <label class="d-choice">
+                        <input type="checkbox" class="d-check" prop:checked=move || form.co_owners.get().contains(&id)
+                            on:change=move |e| { let on = event_target_checked(&e); form.co_owners.update(|v| { v.retain(|x| *x != id); if on { v.push(id); } }); }/>
+                        <span>{m.name.clone()}</span>
+                    </label>
+                }
+            }).collect_view()}
+            <span class="d-hint">"everyone ticked owns it with you: they see it and can add to it."</span>
+        </fieldset>
+    }
+}
+
 #[component]
 fn SummaryList(#[prop(into)] rows: Signal<Vec<(String, String)>>) -> impl IntoView {
     view! {
@@ -453,16 +497,20 @@ pub fn NewAccount() -> impl IntoView {
     let start_kind = query.with_untracked(|q| q.get("kind")).filter(|k| ["bank", "joint", "credit", "loan", "investment"].contains(&k.as_str())).unwrap_or_else(|| "bank".into());
     let kind = RwSignal::new(start_kind);
     let step = RwSignal::new(1u8);
-    let form = Form::new(None);
+    let form = Form::new(None, app.my_id());
     let err = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let others = move || app.members().into_iter().filter(|m| m.id != app.my_id()).collect::<Vec<_>>();
+    let has_others = Memo::new(move |_| !others().is_empty());
+    // picking "joint" ticks everyone; picking another kind starts with just you
+    Effect::new(move |_| {
+        let joint = kind.get() == "joint";
+        form.co_owners.set(if joint { others().into_iter().map(|m| m.id).collect() } else { Vec::new() });
+    });
     let kinds = move || {
         let mut k = vec![("bank", "bank", "asset", "savings or current account".to_string()), ("credit", "credit card", "owed", "limit, bill date, due date".to_string()), ("loan", "loan", "owed", "amount, rate, tenure, emi".to_string()), ("investment", "investment", "asset", "funds, deposits, sip".to_string())];
         let o = others();
-        if !o.is_empty() {
-            k.push(("joint", "joint", "asset", format!("shared with {}", o.iter().map(|m| m.name.split(' ').next().unwrap_or("").to_string()).collect::<Vec<_>>().join(" and "))));
-        }
+        k.push(("joint", "joint", "asset", if o.is_empty() { "owned with someone in your family".to_string() } else { format!("shared with {}", o.iter().map(|m| m.name.split(' ').next().unwrap_or("").to_string()).collect::<Vec<_>>().join(" and ")) }));
         k
     };
     let lead = move || ["pick the kind of account. each kind asks for different details.", "fill in what this kind needs. optional fields can wait.", "check it over, then add it."][step.get() as usize - 1];
@@ -477,7 +525,7 @@ pub fn NewAccount() -> impl IntoView {
         let nav = nav.clone();
         move || {
             let k = kind.get_untracked();
-            let mut body = match form.body(&k) {
+            let mut body = match form.body(&k, k == "joint") {
                 Ok(b) => b,
                 Err(e) => {
                     step.set(2);
@@ -485,9 +533,6 @@ pub fn NewAccount() -> impl IntoView {
                 }
             };
             body.insert("kind".into(), if k == "joint" { "bank" } else { k.as_str() }.into());
-            if k == "joint" {
-                body.insert("owner_ids".into(), others().iter().map(|m| m.id).collect::<Vec<_>>().into());
-            }
             busy.set(true);
             let nav = nav.clone();
             leptos::task::spawn_local(async move {
@@ -509,7 +554,8 @@ pub fn NewAccount() -> impl IntoView {
     };
     let next = move || match step.get_untracked() {
         1 => step.set(2),
-        2 => match form.body(&kind.get_untracked()) {
+        2 if kind.get_untracked() == "joint" && !has_others.get_untracked() => {}
+        2 => match form.body(&kind.get_untracked(), kind.get_untracked() == "joint") {
             Ok(_) => {
                 err.set(None);
                 step.set(3);
@@ -554,6 +600,16 @@ pub fn NewAccount() -> impl IntoView {
                         }).collect_view()}
                     </fieldset>
                 }.into_any(),
+                2 if kind.get() == "joint" && !has_others.get() => view! {
+                    <section class="d-card" aria-labelledby="jn-t" style="max-width:640px">
+                        <header class="d-card__head"><h2 class="d-card__title" id="jn-t">"joint account"</h2><span class="d-card__meta">"needs a family"</span></header>
+                        <div class="d-card__body" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+                            <p style="max-width:64ch">"a joint account is owned by you and someone in your family: both of you see it and add to it. there is nobody to share it with yet."</p>
+                            <p style="max-width:64ch">"create a family and send them an invite code. once they join, come back here."</p>
+                            <a class="d-btn d-btn--secondary" href="/settings/family">"go to family settings"</a>
+                        </div>
+                    </section>
+                }.into_any(),
                 2 => {
                     let k = kind.get();
                     view! {
@@ -562,6 +618,7 @@ pub fn NewAccount() -> impl IntoView {
                                 <header class="d-card__head"><h2 class="d-card__title" id="st-t">{setup_title(&k)}</h2><span class="d-card__meta">{move || format!("owner: {}", owner())}</span></header>
                                 <div class="d-card__body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:16px;align-items:start">
                                     <Fields form=form kind=k.clone() name_hint=name_hint(&k) id="st"/>
+                                    {(k == "joint").then(|| view! { <Owners form=form/> })}
                                 </div>
                                 {move || err.get().map(|m| view! { <div class="d-card__body" style="padding-top:0"><span class="d-error" role="alert">{format!("error: {m}")}</span></div> })}
                             </section>
@@ -585,7 +642,9 @@ pub fn NewAccount() -> impl IntoView {
             }}
             <div class="d-row" style="justify-content:space-between;gap:12px">
                 <span>{move || { step.get() > 1 }.then(|| view! { <button type="button" class="d-btn d-btn--secondary" on:click=move |_| step.update(|s| *s -= 1)>"back"</button> })}</span>
-                <button type="button" class="d-btn d-btn--primary" aria-busy=move || busy.get().then_some("true") on:click={ let next = next2.clone(); move |_| next() }>
+                <button type="button" class="d-btn d-btn--primary" aria-busy=move || busy.get().then_some("true")
+                    aria-disabled=move || (step.get() == 2 && kind.get() == "joint" && !has_others.get()).then_some("true")
+                    on:click={ let next = next2.clone(); move |_| next() }>
                     {move || match step.get() { 1 => "continue", 2 => "review", _ => "add account" }}
                 </button>
             </div>
@@ -602,9 +661,15 @@ pub fn AccountPage() -> impl IntoView {
     let id = Memo::new(move |_| params.with(|p| p.get("id")).and_then(|i| i.parse::<i64>().ok()).unwrap_or(0));
     let account = Memo::new(move |_| app.accounts.with(|a| a.iter().find(|a| a.id == id.get()).cloned()));
     let loaded = Memo::new(move |_| app.me.with(|m| m.is_some()));
+    // lives here so it survives the refresh that follows a save
+    let saved = RwSignal::new(false);
+    Effect::new(move |_| {
+        id.track();
+        saved.set(false);
+    });
     view! {
         {move || match (account.get(), loaded.get()) {
-            (Some(a), _) => view! { <AccountView a=a/> }.into_any(),
+            (Some(a), _) => view! { <AccountView a=a saved=saved/> }.into_any(),
             (None, false) => view! { <EmptyLoading title="loading the account"/> }.into_any(),
             (None, true) => view! {
                 <EmptyState title="no such account" hint="it may have been deleted, or it is not shared with you.">
@@ -616,32 +681,35 @@ pub fn AccountPage() -> impl IntoView {
 }
 
 #[component]
-fn AccountView(a: Account) -> impl IntoView {
+fn AccountView(a: Account, saved: RwSignal<bool>) -> impl IntoView {
     let app = expect_context::<AppState>();
     let nav = use_navigate();
     let id = a.id;
     let kind = kind_key(&a);
-    let form = Form::new(Some(&a));
+    let form = Form::new(Some(&a), app.my_id());
     let err = RwSignal::new(None::<String>);
     let confirm = RwSignal::new(false);
-    let saved = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let owned = a.owners.iter().any(|o| o.id == app.my_id());
-    let can_share = owned && app.in_family() && !a.joint;
+    // only a bank account can be joint
+    let has_others = owned && app.has_family() && a.kind == AccountKind::Bank;
+    let is_joint = Memo::new(move |_| !form.co_owners.get().is_empty());
+    let can_share = owned && app.in_family();
     let tx_count = LocalResource::new(move || {
         app.rev.track();
         async move { api::transactions(&TxFilter { account_id: Some(id), limit: Some(1), ..Default::default() }).await.map(|p| p.total).unwrap_or(0) }
     });
     let summary = Signal::derive(move || form.summary(kind, &app));
     let save = move || {
-        let mut body = match form.body(kind) {
+        // "joint" here is only how a shared bank account is named: its fields are a bank account's
+        let mut body = match form.body(if kind == "joint" { "bank" } else { kind }, has_others) {
             Ok(b) => b,
             Err(e) => return err.set(Some(e)),
         };
         if kind == "loan" {
             body.remove("balance");
         }
-        if can_share {
+        if can_share && !is_joint.get_untracked() {
             body.insert("visibility".into(), form.visibility.get_untracked().into());
         }
         err.set(None);
@@ -713,7 +781,8 @@ fn AccountView(a: Account) -> impl IntoView {
                     <fieldset disabled=!owned style="margin:0;padding:0;border:0;min-width:0">
                         <div class="d-card__body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:16px;align-items:start">
                             <Fields form=form kind=kind.to_string() name_hint="" id="as"/>
-                            {can_share.then(|| view! {
+                            {has_others.then(|| view! { <Owners form=form/> })}
+                            {move || (can_share && !is_joint.get()).then(|| view! {
                                 <div class="d-field">
                                     <label class="d-label" for="as-vis">"who sees it"</label>
                                     <span class="d-select">

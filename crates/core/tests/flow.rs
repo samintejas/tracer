@@ -31,7 +31,7 @@ async fn user(s: &Store, name: &str) -> (Caller, User) {
 
 #[tokio::test]
 async fn auth_and_scopes() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let (ana, u) = user(&s, "anita").await;
     assert_eq!(u.initials, "an");
     assert!(matches!(s.sign_in(SignIn { email: "anita@x.example".into(), password: "wrong".into() }).await, Err(Error::Unauthorized)));
@@ -51,7 +51,7 @@ async fn auth_and_scopes() {
 
 #[tokio::test]
 async fn balances_transfers_and_filters() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let (c, _) = user(&s, "anita").await;
     let bank = s.create_account(&c, acct("salary", AccountKind::Bank, 184_250_00)).await.unwrap();
     let card = s.create_account(&c, acct("card", AccountKind::Credit, 38_420_00)).await.unwrap();
@@ -112,7 +112,7 @@ async fn balances_transfers_and_filters() {
 
 #[tokio::test]
 async fn family_visibility() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let (a, au) = user(&s, "anita").await;
     let (v, vu) = user(&s, "vikram").await;
     let (o, _) = user(&s, "outsider").await;
@@ -135,6 +135,8 @@ async fn family_visibility() {
     let shared = s.create_account(&a, NewAccount { visibility: Visibility::Shared, ..acct("savings", AccountKind::Bank, 5_000_00) }).await.unwrap();
     let joint = s.create_account(&a, NewAccount { owner_ids: vec![vu.id], ..acct("household joint", AccountKind::Bank, 2_000_00) }).await.unwrap();
     assert!(joint.joint && joint.owners.len() == 2);
+    let card = NewAccount { owner_ids: vec![vu.id], ..acct("family card", AccountKind::Credit, 0) };
+    assert!(matches!(s.create_account(&a, card).await, Err(Error::BadRequest(_))), "only bank accounts are joint");
 
     let names = |list: Vec<Account>| list.into_iter().map(|a| a.name).collect::<Vec<_>>();
     assert_eq!(names(s.accounts(&v, false).await.unwrap()), vec!["savings", "household joint"], "private stays private");
@@ -165,7 +167,7 @@ async fn family_visibility() {
 
 #[tokio::test]
 async fn loans_dues_and_ask() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let (c, _) = user(&s, "anita").await;
     assert!(s.create_account(&c, acct("home loan", AccountKind::Loan, 0)).await.is_err(), "a loan needs its terms");
     let now = chrono::Local::now().date_naive();
@@ -205,7 +207,7 @@ async fn loans_dues_and_ask() {
 
 #[tokio::test]
 async fn attachments() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let (c, _) = user(&s, "anita").await;
     let bank = s.create_account(&c, acct("salary", AccountKind::Bank, 0)).await.unwrap();
     let tx = s.add_transaction(&c, spend(bank.id, 10_00, "x", &[])).await.unwrap();
@@ -219,7 +221,7 @@ async fn attachments() {
 
 #[tokio::test]
 async fn profile_sessions_and_deleting_yourself() {
-    let s = Store::memory().await.unwrap();
+    let s = Store::test().await.unwrap();
     let sess = s.sign_up(SignUp { name: "anita rao".into(), email: "a@x.example".into(), password: "correct horse battery".into() }).await.unwrap();
     let c = s.authenticate(&sess.token).await.unwrap();
     let u = s.update_profile(&c, UpdateProfile { picture: Some("data:image/png;base64,AAAA".into()), notify_joint: Some(false), currency: Some("usd".into()), ..Default::default() }).await.unwrap();

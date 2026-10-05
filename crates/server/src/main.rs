@@ -8,6 +8,11 @@ use tracer_core::Store;
 
 #[tokio::main]
 async fn main() {
+    // `tracer tx list | head` should end quietly when the reader goes away, not panic on a broken pipe
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "tracer=info".into())).init();
     let cli = Cli::parse();
     if let Err(e) = real_main(cli).await {

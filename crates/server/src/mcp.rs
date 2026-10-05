@@ -17,7 +17,7 @@ fn tools() -> Value {
     json!([
       {"name": "list_accounts", "description": format!("List the accounts you can see (yours, joint ones, and family-shared ones). Each has a balance: what you hold, or what you owe for credit and loan accounts (see `kind`). {NOTE}"),
        "inputSchema": {"type": "object", "properties": {"include_archived": {"type": "boolean"}}}},
-      {"name": "create_account", "description": format!("Create an account. kind is bank, credit, loan or investment. `balance` is what you hold now, or owe now for credit. A loan needs loan_total, rate (annual %), tenure (months) and start (YYYY-MM); its balance comes from the schedule. owner_ids adds family members as co-owners (joint). {NOTE}"),
+      {"name": "create_account", "description": format!("Create an account. kind is bank, credit, loan or investment. `balance` is what you hold now, or owe now for credit. A loan needs loan_total, rate (annual %), tenure (months) and start (YYYY-MM); its balance comes from the schedule. owner_ids adds family members as co-owners of a bank account (joint); other kinds cannot be joint. {NOTE}"),
        "inputSchema": {"type": "object", "required": ["name", "kind"], "properties": {
          "name": s, "kind": {"type": "string", "enum": ACCOUNT_KINDS}, "balance": amount,
          "visibility": {"type": "string", "enum": ["private", "shared"], "description": "shared lets your family see it"},

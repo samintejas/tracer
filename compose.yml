@@ -1,0 +1,25 @@
+# The database for tracer/fin.   docker compose up -d
+# The app itself runs on the host (cargo run -p tracer -- serve) and connects to it on localhost.
+name: tracer
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tracer
+      POSTGRES_PASSWORD: ${TRACER_PG_PASSWORD:-tracer}
+      POSTGRES_DB: tracer
+    ports:
+      # local only: nothing outside this machine can reach it
+      - "127.0.0.1:${TRACER_PG_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracer -d tracer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

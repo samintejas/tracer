@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sqlx::{AssertSqlSafe, QueryBuilder, Row, Sqlite};
+use sqlx::{AssertSqlSafe, Postgres, QueryBuilder, Row};
 
 use crate::api::*;
 use crate::{Caller, Error, Result, Store, clean, date_or_today, tags as norm_tags, visible};
@@ -20,7 +20,7 @@ fn magnitude(a: i64) -> Result<i64> {
 
 impl Store {
     /// Every filter of [`TxFilter`] as a WHERE clause over `t` (transactions) and `a` (accounts).
-    fn push_filter(qb: &mut QueryBuilder<Sqlite>, user: i64, f: &TxFilter) {
+    fn push_filter(qb: &mut QueryBuilder<Postgres>, user: i64, f: &TxFilter) {
         qb.push(" FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE ");
         qb.push(visible(user));
         if let Some(id) = f.account_id {
@@ -71,17 +71,17 @@ impl Store {
 
     pub async fn transactions(&self, c: &Caller, f: TxFilter) -> Result<TxPage> {
         c.need("transactions")?;
-        let mut count = QueryBuilder::<Sqlite>::new("SELECT COUNT(*)");
+        let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*)");
         Self::push_filter(&mut count, c.user_id, &f);
         let total: i64 = count.build().fetch_one(&self.pool).await?.get(0);
-        let mut sums = QueryBuilder::<Sqlite>::new(
-            "SELECT COALESCE(SUM(CASE WHEN t.kind = 'credit' THEN t.amount ELSE 0 END), 0), COALESCE(SUM(CASE WHEN t.kind = 'debit' THEN -t.amount ELSE 0 END), 0)",
+        let mut sums = QueryBuilder::<Postgres>::new(
+            "SELECT COALESCE(SUM(CASE WHEN t.kind = 'credit' THEN t.amount ELSE 0 END), 0)::BIGINT, COALESCE(SUM(CASE WHEN t.kind = 'debit' THEN -t.amount ELSE 0 END), 0)::BIGINT",
         );
         Self::push_filter(&mut sums, c.user_id, &f);
         let sums = sums.build().fetch_one(&self.pool).await?;
         let (total_in, total_out): (i64, i64) = (sums.get(0), sums.get(1));
 
-        let mut qb = QueryBuilder::<Sqlite>::new(
+        let mut qb = QueryBuilder::<Postgres>::new(
             "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.note, t.transfer_id, t.created_by, \
              (SELECT t2.account_id FROM transactions t2 WHERE t.transfer_id IS NOT NULL AND t2.transfer_id = t.transfer_id AND t2.id <> t.id LIMIT 1) AS counterpart_id, \
              (SELECT name FROM users u WHERE u.id = t.created_by) AS by_name, \
@@ -92,7 +92,7 @@ impl Store {
         let order = match f.sort.as_deref() {
             Some("description") => format!("lower(t.description) {dir}, t.id DESC"),
             Some("amount") => format!("t.amount {dir}, t.id DESC"),
-            Some("tag") => format!("(SELECT g.tag FROM tx_tags g WHERE g.tx_id = t.id ORDER BY g.rowid LIMIT 1) {dir}, t.date DESC, t.id DESC"),
+            Some("tag") => format!("(SELECT g.tag FROM tx_tags g WHERE g.tx_id = t.id ORDER BY g.id LIMIT 1) {dir}, t.date DESC, t.id DESC"),
             Some("account") => format!("lower(a.name) {dir}, t.date DESC, t.id DESC"),
             Some("person") => format!("(SELECT lower(u.name) FROM users u WHERE u.id = t.created_by) {dir}, t.date DESC, t.id DESC"),
             _ => format!("t.date {dir}, t.id {dir}"),
@@ -104,12 +104,12 @@ impl Store {
         Ok(TxPage { items: self.hydrate(rows).await?, total, total_in, total_out })
     }
 
-    async fn hydrate(&self, rows: Vec<sqlx::sqlite::SqliteRow>) -> Result<Vec<Transaction>> {
+    async fn hydrate(&self, rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Transaction>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
         let ids: Vec<i64> = rows.iter().map(|r| r.get("id")).collect();
-        let in_list = |qb: &mut QueryBuilder<Sqlite>| {
+        let in_list = |qb: &mut QueryBuilder<Postgres>| {
             qb.push(" IN (");
             let mut sep = qb.separated(", ");
             for id in &ids {
@@ -118,14 +118,14 @@ impl Store {
             qb.push(")");
         };
         let mut tags: HashMap<i64, Vec<String>> = HashMap::new();
-        let mut qb = QueryBuilder::<Sqlite>::new("SELECT tx_id, tag FROM tx_tags WHERE tx_id");
+        let mut qb = QueryBuilder::<Postgres>::new("SELECT tx_id, tag FROM tx_tags WHERE tx_id");
         in_list(&mut qb);
-        qb.push(" ORDER BY rowid");
+        qb.push(" ORDER BY id");
         for r in qb.build().fetch_all(&self.pool).await? {
             tags.entry(r.get(0)).or_default().push(r.get(1));
         }
         let mut files: HashMap<i64, Vec<Attachment>> = HashMap::new();
-        let mut qb = QueryBuilder::<Sqlite>::new("SELECT id, tx_id, name, size FROM attachments WHERE tx_id");
+        let mut qb = QueryBuilder::<Postgres>::new("SELECT id, tx_id, name, size FROM attachments WHERE tx_id");
         in_list(&mut qb);
         qb.push(" ORDER BY id");
         for r in qb.build().fetch_all(&self.pool).await? {
@@ -155,7 +155,7 @@ impl Store {
 
     pub async fn transaction(&self, c: &Caller, id: i64) -> Result<Transaction> {
         c.need("transactions")?;
-        let mut qb = QueryBuilder::<Sqlite>::new(
+        let mut qb = QueryBuilder::<Postgres>::new(
             "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.note, t.transfer_id, t.created_by, \
              (SELECT t2.account_id FROM transactions t2 WHERE t.transfer_id IS NOT NULL AND t2.transfer_id = t.transfer_id AND t2.id <> t.id LIMIT 1) AS counterpart_id, \
              (SELECT name FROM users u WHERE u.id = t.created_by) AS by_name, \
@@ -168,9 +168,9 @@ impl Store {
     }
 
     async fn set_tags(&self, tx: i64, tags: &[String]) -> Result<()> {
-        sqlx::query("DELETE FROM tx_tags WHERE tx_id = ?").bind(tx).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM tx_tags WHERE tx_id = $1").bind(tx).execute(&self.pool).await?;
         for t in tags {
-            sqlx::query("INSERT OR IGNORE INTO tx_tags (tx_id, tag) VALUES (?, ?)").bind(tx).bind(t).execute(&self.pool).await?;
+            sqlx::query("INSERT INTO tx_tags (tx_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING").bind(tx).bind(t).execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -185,7 +185,7 @@ impl Store {
             TxKind::Transfer => return Err(Error::bad("use a transfer to move money between your accounts")),
         };
         let date = date_or_today(b.date.as_deref())?;
-        let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, note, created_by) VALUES (?,?,?,?,?,?,?)")
+        let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
             .bind(b.account_id)
             .bind(b.kind.as_str())
             .bind(signed)
@@ -193,9 +193,9 @@ impl Store {
             .bind(clean(&b.description))
             .bind(clean(&b.note))
             .bind(c.user_id)
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await?
-            .last_insert_rowid();
+            .get::<i64, _>(0);
         // the first tag groups it in insights, so there is always one
         let mut tags = norm_tags(&b.tags);
         if tags.is_empty() {
@@ -260,20 +260,20 @@ impl Store {
         let back = format!("from {}", from.name);
         let mut ids = Vec::new();
         for (acct, amt, d) in [(from.id, -amount, desc.clone()), (to.id, amount, if clean(&b.description).is_empty() { back } else { desc })] {
-            let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, note, created_by) VALUES (?, 'transfer', ?, ?, ?, ?, ?)")
+            let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, note, created_by) VALUES ($1, 'transfer', $2, $3, $4, $5, $6) RETURNING id")
                 .bind(acct)
                 .bind(amt)
                 .bind(&date)
                 .bind(d)
                 .bind(clean(&b.note))
                 .bind(c.user_id)
-                .execute(&self.pool)
+                .fetch_one(&self.pool)
                 .await?
-                .last_insert_rowid();
+                .get::<i64, _>(0);
             ids.push(id);
         }
         for id in &ids {
-            sqlx::query("UPDATE transactions SET transfer_id = ? WHERE id = ?").bind(ids[0]).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE transactions SET transfer_id = $1 WHERE id = $2").bind(ids[0]).bind(id).execute(&self.pool).await?;
             self.set_tags(*id, &tags).await?;
         }
         self.tell_others(c, &to, amount, &format!("transfer from {}", from.name)).await?;
@@ -288,7 +288,7 @@ impl Store {
     async fn legs(&self, id: i64, transfer_id: Option<i64>) -> Result<Vec<i64>> {
         Ok(match transfer_id {
             None => vec![id],
-            Some(t) => sqlx::query("SELECT id FROM transactions WHERE transfer_id = ?").bind(t).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect(),
+            Some(t) => sqlx::query("SELECT id FROM transactions WHERE transfer_id = $1").bind(t).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect(),
         })
     }
 
@@ -300,33 +300,33 @@ impl Store {
         if let Some(a) = b.amount {
             let m = magnitude(a)?;
             for leg in &legs {
-                let sign: i64 = sqlx::query("SELECT amount FROM transactions WHERE id = ?").bind(leg).fetch_one(&self.pool).await?.get::<i64, _>(0).signum();
-                sqlx::query("UPDATE transactions SET amount = ? WHERE id = ?").bind(sign * m).bind(leg).execute(&self.pool).await?;
+                let sign: i64 = sqlx::query("SELECT amount FROM transactions WHERE id = $1").bind(leg).fetch_one(&self.pool).await?.get::<i64, _>(0).signum();
+                sqlx::query("UPDATE transactions SET amount = $1 WHERE id = $2").bind(sign * m).bind(leg).execute(&self.pool).await?;
             }
         }
         if let Some(d) = &b.date {
             let d = date_or_today(Some(d))?;
             for leg in &legs {
-                sqlx::query("UPDATE transactions SET date = ? WHERE id = ?").bind(&d).bind(leg).execute(&self.pool).await?;
+                sqlx::query("UPDATE transactions SET date = $1 WHERE id = $2").bind(&d).bind(leg).execute(&self.pool).await?;
             }
         }
         for leg in &legs {
             if let Some(d) = &b.description {
-                sqlx::query("UPDATE transactions SET description = ? WHERE id = ?").bind(clean(d)).bind(leg).execute(&self.pool).await?;
+                sqlx::query("UPDATE transactions SET description = $1 WHERE id = $2").bind(clean(d)).bind(leg).execute(&self.pool).await?;
             }
             if let Some(n) = &b.note {
-                sqlx::query("UPDATE transactions SET note = ? WHERE id = ?").bind(clean(n)).bind(leg).execute(&self.pool).await?;
+                sqlx::query("UPDATE transactions SET note = $1 WHERE id = $2").bind(clean(n)).bind(leg).execute(&self.pool).await?;
             }
             if let Some(t) = &b.tags {
                 self.set_tags(*leg, &norm_tags(t)).await?;
             }
-            sqlx::query("UPDATE transactions SET updated_at = datetime('now') WHERE id = ?").bind(leg).execute(&self.pool).await?;
+            sqlx::query("UPDATE transactions SET updated_at = utc_now() WHERE id = $1").bind(leg).execute(&self.pool).await?;
         }
         if let Some(kind) = b.kind.filter(|k| *k != tx.kind) {
             if tx.transfer_id.is_some() || kind == TxKind::Transfer {
                 return Err(Error::bad("a transfer cannot become money in or out, or the other way; delete it and add a new one"));
             }
-            sqlx::query("UPDATE transactions SET kind = ?, amount = CASE WHEN ? = 'debit' THEN -ABS(amount) ELSE ABS(amount) END WHERE id = ?")
+            sqlx::query("UPDATE transactions SET kind = $1, amount = CASE WHEN $2 = 'debit' THEN -ABS(amount) ELSE ABS(amount) END WHERE id = $3")
                 .bind(kind.as_str())
                 .bind(kind.as_str())
                 .bind(id)
@@ -338,7 +338,7 @@ impl Store {
                 return Err(Error::bad("a transfer cannot be moved to another account; delete it and add a new one"));
             }
             self.owned_account(c, acct).await?;
-            sqlx::query("UPDATE transactions SET account_id = ? WHERE id = ?").bind(acct).bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE transactions SET account_id = $1 WHERE id = $2").bind(acct).bind(id).execute(&self.pool).await?;
         }
         self.transaction(c, id).await
     }
@@ -350,7 +350,7 @@ impl Store {
         self.owned_account(c, tx.account_id).await?;
         let mut n = 0;
         for leg in self.legs(id, tx.transfer_id).await? {
-            n += sqlx::query("DELETE FROM transactions WHERE id = ?").bind(leg).execute(&self.pool).await?.rows_affected();
+            n += sqlx::query("DELETE FROM transactions WHERE id = $1").bind(leg).execute(&self.pool).await?.rows_affected();
         }
         Ok(n)
     }
@@ -415,32 +415,32 @@ impl Store {
         self.owned_account(c, tx.account_id).await?;
         let name: String = name.rsplit(['/', '\\']).next().unwrap_or("file").chars().take(120).collect();
         let size = data.len() as i64;
-        let id = sqlx::query("INSERT INTO attachments (tx_id, name, size, mime, data) VALUES (?,?,?,?,?)")
+        let id = sqlx::query("INSERT INTO attachments (tx_id, name, size, mime, data) VALUES ($1,$2,$3,$4,$5) RETURNING id")
             .bind(tx_id)
             .bind(&name)
             .bind(size)
             .bind(mime)
             .bind(data)
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await?
-            .last_insert_rowid();
+            .get::<i64, _>(0);
         Ok(Attachment { id, name, size })
     }
 
     /// `(name, mime, bytes)` of an attachment on a transaction the caller can see.
     pub async fn attachment(&self, c: &Caller, id: i64) -> Result<(String, String, Vec<u8>)> {
         c.need("transactions")?;
-        let r = sqlx::query("SELECT tx_id, name, mime, data FROM attachments WHERE id = ?").bind(id).fetch_optional(&self.pool).await?.ok_or(Error::NotFound("attachment"))?;
+        let r = sqlx::query("SELECT tx_id, name, mime, data FROM attachments WHERE id = $1").bind(id).fetch_optional(&self.pool).await?.ok_or(Error::NotFound("attachment"))?;
         self.transaction(c, r.get("tx_id")).await?;
         Ok((r.get("name"), r.get("mime"), r.get("data")))
     }
 
     pub async fn delete_attachment(&self, c: &Caller, id: i64) -> Result<()> {
         c.need("edit")?;
-        let tx_id: i64 = sqlx::query("SELECT tx_id FROM attachments WHERE id = ?").bind(id).fetch_optional(&self.pool).await?.ok_or(Error::NotFound("attachment"))?.get(0);
+        let tx_id: i64 = sqlx::query("SELECT tx_id FROM attachments WHERE id = $1").bind(id).fetch_optional(&self.pool).await?.ok_or(Error::NotFound("attachment"))?.get(0);
         let tx = self.transaction(c, tx_id).await?;
         self.owned_account(c, tx.account_id).await?;
-        sqlx::query("DELETE FROM attachments WHERE id = ?").bind(id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM attachments WHERE id = $1").bind(id).execute(&self.pool).await?;
         Ok(())
     }
 }

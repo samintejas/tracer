@@ -50,9 +50,9 @@ impl Store {
     async fn flow_rows(&self, user_id: i64, member: Option<i64>, since: NaiveDate) -> Result<Vec<Row_>> {
         let sql = format!(
             "SELECT t.date, t.amount, t.kind, \
-             COALESCE((SELECT tag FROM tx_tags g WHERE g.tx_id = t.id ORDER BY g.rowid LIMIT 1), 'untagged') AS category \
+             COALESCE((SELECT tag FROM tx_tags g WHERE g.tx_id = t.id ORDER BY g.id LIMIT 1), 'untagged') AS category \
              FROM transactions t JOIN accounts a ON a.id = t.account_id \
-             WHERE {} AND t.kind <> 'transfer' AND t.date >= ?1 AND (?2 IS NULL OR t.created_by = ?2)",
+             WHERE {} AND t.kind <> 'transfer' AND t.date >= $1 AND ($2 IS NULL OR t.created_by = $2)",
             visible(user_id)
         );
         let rows = sqlx::query(AssertSqlSafe(sql)).bind(since.to_string()).bind(member).fetch_all(&self.pool).await?;

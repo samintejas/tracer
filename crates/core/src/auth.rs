@@ -40,7 +40,7 @@ pub(crate) fn initials_of(name: &str) -> String {
     s.to_lowercase()
 }
 
-fn user_from(r: &sqlx::sqlite::SqliteRow) -> User {
+fn user_from(r: &sqlx::postgres::PgRow) -> User {
     User {
         id: r.get("id"),
         name: r.get("name"),
@@ -84,23 +84,23 @@ impl Store {
         let email = check_email(&b.email)?;
         check_password(&b.password)?;
         let hash = hash_password(&b.password)?;
-        let id = sqlx::query("INSERT INTO users (name, email, password_hash, initials) VALUES (?, ?, ?, ?)")
+        let id = sqlx::query("INSERT INTO users (name, email, password_hash, initials) VALUES ($1, $2, $3, $4) RETURNING id")
             .bind(&name)
             .bind(&email)
             .bind(&hash)
             .bind(initials_of(&name))
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await
             .map_err(|e| match Error::from(e) {
                 Error::Conflict(_) => Error::Conflict("an account with this email already exists".into()),
                 other => other,
             })?
-            .last_insert_rowid();
+            .get::<i64, _>(0);
         self.open_session(id).await
     }
 
     pub async fn sign_in(&self, b: SignIn) -> Result<Session> {
-        let row = sqlx::query("SELECT id, password_hash FROM users WHERE email = ?")
+        let row = sqlx::query("SELECT id, password_hash FROM users WHERE lower(email) = lower($1)")
             .bind(clean(&b.email))
             .fetch_optional(&self.pool)
             .await?;
@@ -120,7 +120,7 @@ impl Store {
 
     async fn open_session(&self, user_id: i64) -> Result<Session> {
         let token = new_token("trs");
-        sqlx::query("INSERT INTO tokens (user_id, kind, token_hash, tail) VALUES (?, 'session', ?, ?)")
+        sqlx::query("INSERT INTO tokens (user_id, kind, token_hash, tail) VALUES ($1, 'session', $2, $3)")
             .bind(user_id)
             .bind(hash_token(&token))
             .bind(&token[token.len() - 4..])
@@ -130,7 +130,7 @@ impl Store {
     }
 
     pub async fn sign_out(&self, token: &str) -> Result<()> {
-        sqlx::query("DELETE FROM tokens WHERE token_hash = ? AND kind = 'session'")
+        sqlx::query("DELETE FROM tokens WHERE token_hash = $1 AND kind = 'session'")
             .bind(hash_token(token))
             .execute(&self.pool)
             .await?;
@@ -140,8 +140,8 @@ impl Store {
     /// Resolve a bearer token (session or connector) to who is acting. Sessions expire after 90 days.
     pub async fn authenticate(&self, token: &str) -> Result<Caller> {
         let row = sqlx::query(
-            "SELECT id, user_id, kind, scopes FROM tokens WHERE token_hash = ? \
-             AND (kind = 'connector' OR created_at > datetime('now', '-90 days'))",
+            "SELECT id, user_id, kind, scopes FROM tokens WHERE token_hash = $1 \
+             AND (kind = 'connector' OR created_at > utc_text(now() - interval '90 days'))",
         )
         .bind(hash_token(token))
         .fetch_optional(&self.pool)
@@ -150,7 +150,7 @@ impl Store {
         let (id, user_id): (i64, i64) = (row.get("id"), row.get("user_id"));
         let kind: String = row.get("kind");
         if kind == "connector" {
-            sqlx::query("UPDATE tokens SET last_used_at = datetime('now') WHERE id = ?").bind(id).execute(&self.pool).await?;
+            sqlx::query("UPDATE tokens SET last_used_at = utc_now() WHERE id = $1").bind(id).execute(&self.pool).await?;
             let scopes: String = row.get("scopes");
             Ok(Caller::scoped(user_id, scopes.split(',').filter(|s| !s.is_empty()).map(String::from).collect()))
         } else {
@@ -159,7 +159,7 @@ impl Store {
     }
 
     pub async fn user(&self, id: i64) -> Result<User> {
-        let row = sqlx::query(AssertSqlSafe(format!("SELECT {USER_COLS} FROM users WHERE id = ?")))
+        let row = sqlx::query(AssertSqlSafe(format!("SELECT {USER_COLS} FROM users WHERE id = $1")))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
@@ -168,7 +168,7 @@ impl Store {
     }
 
     pub async fn user_by_email(&self, email: &str) -> Result<User> {
-        let row = sqlx::query(AssertSqlSafe(format!("SELECT {USER_COLS} FROM users WHERE email = ?")))
+        let row = sqlx::query(AssertSqlSafe(format!("SELECT {USER_COLS} FROM users WHERE lower(email) = lower($1)")))
             .bind(clean(email))
             .fetch_optional(&self.pool)
             .await?
@@ -211,7 +211,7 @@ impl Store {
                 Some(p)
             }
         };
-        sqlx::query("UPDATE users SET name = ?, initials = ?, email = ?, phone = ?, currency = ?, picture = ?, notify_card = ?, notify_emi = ?, notify_joint = ? WHERE id = ?")
+        sqlx::query("UPDATE users SET name = $1, initials = $2, email = $3, phone = $4, currency = $5, picture = $6, notify_card = $7, notify_emi = $8, notify_joint = $9 WHERE id = $10")
             .bind(name)
             .bind(initials.chars().take(2).collect::<String>())
             .bind(email)
@@ -234,7 +234,7 @@ impl Store {
     pub async fn change_password(&self, c: &Caller, b: ChangePassword) -> Result<()> {
         c.need("edit")?;
         check_password(&b.new)?;
-        let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = ?")
+        let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = $1")
             .bind(c.user_id)
             .fetch_one(&self.pool)
             .await?
@@ -248,13 +248,13 @@ impl Store {
     /// Set a password directly. For the CLI (there is no email to send a reset link from).
     pub async fn set_password(&self, user_id: i64, password: &str) -> Result<()> {
         check_password(password)?;
-        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
             .bind(hash_password(password)?)
             .bind(user_id)
             .execute(&self.pool)
             .await?;
         // sign out everywhere else
-        sqlx::query("DELETE FROM tokens WHERE user_id = ? AND kind = 'session'").bind(user_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM tokens WHERE user_id = $1 AND kind = 'session'").bind(user_id).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -271,21 +271,21 @@ impl Store {
             return Err(Error::bad(format!("unknown scope '{bad}', use one of {SCOPES:?}")));
         }
         let token = new_token("trc");
-        let id = sqlx::query("INSERT INTO tokens (user_id, kind, name, token_hash, tail, scopes) VALUES (?, 'connector', ?, ?, ?, ?)")
+        let id = sqlx::query("INSERT INTO tokens (user_id, kind, name, token_hash, tail, scopes) VALUES ($1, 'connector', $2, $3, $4, $5) RETURNING id")
             .bind(c.user_id)
             .bind(&name)
             .bind(hash_token(&token))
             .bind(&token[token.len() - 4..])
             .bind(scopes.join(","))
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await?
-            .last_insert_rowid();
+            .get::<i64, _>(0);
         let connector = self.connectors(c).await?.into_iter().find(|x| x.id == id).ok_or(Error::NotFound("connector"))?;
         Ok(CreatedConnector { token, connector })
     }
 
     pub async fn connectors(&self, c: &Caller) -> Result<Vec<Connector>> {
-        let rows = sqlx::query("SELECT id, name, scopes, tail, created_at, last_used_at FROM tokens WHERE user_id = ? AND kind = 'connector' ORDER BY id")
+        let rows = sqlx::query("SELECT id, name, scopes, tail, created_at, last_used_at FROM tokens WHERE user_id = $1 AND kind = 'connector' ORDER BY id")
             .bind(c.user_id)
             .fetch_all(&self.pool)
             .await?;
@@ -308,7 +308,7 @@ impl Store {
         if let Some(bad) = b.scopes.iter().find(|s| !SCOPES.contains(&s.as_str())) {
             return Err(Error::bad(format!("unknown scope '{bad}', use one of {SCOPES:?}")));
         }
-        let n = sqlx::query("UPDATE tokens SET scopes = ? WHERE id = ? AND user_id = ? AND kind = 'connector'")
+        let n = sqlx::query("UPDATE tokens SET scopes = $1 WHERE id = $2 AND user_id = $3 AND kind = 'connector'")
             .bind(b.scopes.join(","))
             .bind(id)
             .bind(c.user_id)
@@ -323,7 +323,7 @@ impl Store {
 
     /// Sign out everywhere, this device included. Connector tokens keep working.
     pub async fn sign_out_all(&self, c: &Caller) -> Result<()> {
-        sqlx::query("DELETE FROM tokens WHERE user_id = ? AND kind = 'session'").bind(c.user_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM tokens WHERE user_id = $1 AND kind = 'session'").bind(c.user_id).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -331,30 +331,30 @@ impl Store {
     /// place in a family. Joint accounts stay with the other owners. Needs the password. Cannot be undone.
     pub async fn delete_user(&self, c: &Caller, password: &str) -> Result<()> {
         c.need("edit")?;
-        let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = ?").bind(c.user_id).fetch_one(&self.pool).await?.get(0);
+        let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = $1").bind(c.user_id).fetch_one(&self.pool).await?.get(0);
         if !verify_password(password, &hash) {
             return Err(Error::Forbidden("password is wrong".into()));
         }
         self.leave_family(c).await?;
         // what is left is owned by this person alone
-        let mine: Vec<i64> = sqlx::query("SELECT account_id FROM account_owners WHERE user_id = ?").bind(c.user_id).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect();
+        let mine: Vec<i64> = sqlx::query("SELECT account_id FROM account_owners WHERE user_id = $1").bind(c.user_id).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect();
         for id in mine {
             self.remove_account(id).await?;
         }
         // their entries on accounts they no longer own are kept, under an owner of that account
         sqlx::query(
-            "UPDATE transactions SET created_by = (SELECT o.user_id FROM account_owners o WHERE o.account_id = transactions.account_id LIMIT 1) WHERE created_by = ?",
+            "UPDATE transactions SET created_by = (SELECT o.user_id FROM account_owners o WHERE o.account_id = transactions.account_id LIMIT 1) WHERE created_by = $1",
         )
         .bind(c.user_id)
         .execute(&self.pool)
         .await?;
-        sqlx::query("DELETE FROM users WHERE id = ?").bind(c.user_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(c.user_id).execute(&self.pool).await?;
         Ok(())
     }
 
     pub async fn revoke_connector(&self, c: &Caller, id: i64) -> Result<()> {
         c.need("edit")?;
-        let n = sqlx::query("DELETE FROM tokens WHERE id = ? AND user_id = ? AND kind = 'connector'")
+        let n = sqlx::query("DELETE FROM tokens WHERE id = $1 AND user_id = $2 AND kind = 'connector'")
             .bind(id)
             .bind(c.user_id)
             .execute(&self.pool)

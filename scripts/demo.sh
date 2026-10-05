@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fill a database with the sample household from the design: anita and vikram rao, a family, twelve
+# Fill the database with the sample household from the design: anita and vikram rao, a family, twelve
 # accounts and six months of transactions. For trying the app; not for real data.
-#   scripts/demo.sh [sqlite://demo.db]        password for both: "correct horse battery"
+#   scripts/demo.sh [postgres://…]        default: the docker compose database. password for both: "correct horse battery"
+# It adds to what is there, so run it on an empty database (docker compose down -v && docker compose up -d).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export TRACER_DB="${1:-sqlite://demo.db}" TRACER_PASSWORD='correct horse battery'
+export TRACER_DB="${1:-${TRACER_DB:-postgres://tracer:tracer@localhost:5432/tracer}}" TRACER_PASSWORD='correct horse battery'
 T="${TRACER_BIN:-target/debug/tracer}"
 [ -x "$T" ] || cargo build -q -p tracer
 A=anita@rao.example; V=vikram@rao.example
@@ -23,12 +24,12 @@ a account add "emergency fund" --balance 450000 --shared
 a account add "household joint" --balance 212800 --with $V
 a account add "card, anita" --kind credit --balance 38420 --limit 300000 --due-day 18
 v account add "card, vikram" --kind credit --balance 12150 --limit 150000 --due-day 22 --shared
-a account add "home loan" --kind loan --total 2500000 --rate 8.5 --tenure 180 --start 2019-04 --emi-day 5 --with $V
+a account add "home loan" --kind loan --total 2500000 --rate 8.5 --tenure 180 --start 2019-04 --emi-day 5 --shared
 v account add "car loan" --kind loan --total 800000 --rate 9.5 --tenure 60 --start 2023-10 --emi-day 28 --shared
 a account add "mutual funds, sip" --kind investment --balance 685300 --invested 600000 --shared
 v account add "index fund" --kind investment --balance 320000 --invested 290000 --shared
 a account add "ppf" --kind investment --balance 410000 --invested 365000
-a account add "fixed deposit" --kind investment --balance 207400 --invested 200000 --with $V
+a account add "fixed deposit" --kind investment --balance 207400 --invested 200000 --shared
 
 # five earlier months: salaries in, the usual out
 for m in 5 4 3 2 1; do

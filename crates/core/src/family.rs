@@ -14,7 +14,7 @@ fn invite_code() -> String {
 
 impl Store {
     pub(crate) async fn family(&self, user_id: i64) -> Result<Option<Family>> {
-        let Some(f) = sqlx::query("SELECT f.id, f.name, f.owner_id, f.invite_code FROM families f JOIN family_members m ON m.family_id = f.id WHERE m.user_id = ?")
+        let Some(f) = sqlx::query("SELECT f.id, f.name, f.owner_id, f.invite_code FROM families f JOIN family_members m ON m.family_id = f.id WHERE m.user_id = $1")
             .bind(user_id)
             .fetch_optional(&self.pool)
             .await?
@@ -23,7 +23,7 @@ impl Store {
         };
         let id: i64 = f.get("id");
         let owner_id: i64 = f.get("owner_id");
-        let members = sqlx::query("SELECT u.id, u.name, u.initials, u.email FROM users u JOIN family_members m ON m.user_id = u.id WHERE m.family_id = ? ORDER BY u.id = ? DESC, u.id")
+        let members = sqlx::query("SELECT u.id, u.name, u.initials, u.email FROM users u JOIN family_members m ON m.user_id = u.id WHERE m.family_id = $1 ORDER BY u.id = $2 DESC, u.id")
             .bind(id)
             .bind(owner_id)
             .fetch_all(&self.pool)
@@ -45,8 +45,8 @@ impl Store {
         if self.family(c.user_id).await?.is_some() {
             return Err(Error::Conflict("you are already in a family".into()));
         }
-        let id = sqlx::query("INSERT INTO families (name, owner_id) VALUES (?, ?)").bind(&name).bind(c.user_id).execute(&self.pool).await?.last_insert_rowid();
-        sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES (?, ?)").bind(id).bind(c.user_id).execute(&self.pool).await?;
+        let id = sqlx::query("INSERT INTO families (name, owner_id) VALUES ($1, $2) RETURNING id").bind(&name).bind(c.user_id).fetch_one(&self.pool).await?.get::<i64, _>(0);
+        sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES ($1, $2)").bind(id).bind(c.user_id).execute(&self.pool).await?;
         self.family(c.user_id).await?.ok_or(Error::NotFound("family"))
     }
 
@@ -60,7 +60,7 @@ impl Store {
         if f.members.len() >= 6 {
             return Err(Error::Conflict("this family is full".into()));
         }
-        sqlx::query("UPDATE families SET invite_code = ? WHERE id = ?").bind(invite_code()).bind(f.id).execute(&self.pool).await?;
+        sqlx::query("UPDATE families SET invite_code = $1 WHERE id = $2").bind(invite_code()).bind(f.id).execute(&self.pool).await?;
         self.family(c.user_id).await?.ok_or(Error::NotFound("family"))
     }
 
@@ -73,15 +73,15 @@ impl Store {
         if code.is_empty() {
             return Err(Error::bad("enter the invite code"));
         }
-        let id: i64 = sqlx::query("SELECT id FROM families WHERE invite_code = ?")
+        let id: i64 = sqlx::query("SELECT id FROM families WHERE invite_code = $1")
             .bind(&code)
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| Error::bad("that code does not match a family, or it was already used"))?
             .get(0);
-        sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES (?, ?)").bind(id).bind(c.user_id).execute(&self.pool).await?;
+        sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES ($1, $2)").bind(id).bind(c.user_id).execute(&self.pool).await?;
         // each code works once
-        sqlx::query("UPDATE families SET invite_code = NULL WHERE id = ?").bind(id).execute(&self.pool).await?;
+        sqlx::query("UPDATE families SET invite_code = NULL WHERE id = $1").bind(id).execute(&self.pool).await?;
         let me = self.user(c.user_id).await?;
         let f = self.family(c.user_id).await?.ok_or(Error::NotFound("family"))?;
         for m in f.members.iter().filter(|m| m.id != c.user_id) {
@@ -93,17 +93,17 @@ impl Store {
     async fn drop_member(&self, user_id: i64) -> Result<()> {
         // a joint account stays with the people who are still together: the leaver drops off it
         sqlx::query(
-            "DELETE FROM account_owners WHERE user_id = ? AND account_id IN \
+            "DELETE FROM account_owners WHERE user_id = $1 AND account_id IN \
              (SELECT account_id FROM account_owners GROUP BY account_id HAVING COUNT(*) > 1)",
         )
         .bind(user_id)
         .execute(&self.pool)
         .await?;
-        sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT account_id FROM account_owners WHERE user_id = ?)")
+        sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT account_id FROM account_owners WHERE user_id = $1)")
             .bind(user_id)
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM family_members WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM family_members WHERE user_id = $1").bind(user_id).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -115,10 +115,10 @@ impl Store {
         self.drop_member(c.user_id).await?;
         match f.members.iter().find(|m| m.id != c.user_id) {
             None => {
-                sqlx::query("DELETE FROM families WHERE id = ?").bind(f.id).execute(&self.pool).await?;
+                sqlx::query("DELETE FROM families WHERE id = $1").bind(f.id).execute(&self.pool).await?;
             }
             Some(next) if f.owner_id == c.user_id => {
-                sqlx::query("UPDATE families SET owner_id = ? WHERE id = ?").bind(next.id).bind(f.id).execute(&self.pool).await?;
+                sqlx::query("UPDATE families SET owner_id = $1 WHERE id = $2").bind(next.id).bind(f.id).execute(&self.pool).await?;
             }
             _ => {}
         }
@@ -133,11 +133,11 @@ impl Store {
         if f.owner_id != c.user_id {
             return Err(Error::Forbidden("only the family owner can delete it".into()));
         }
-        sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT o.account_id FROM account_owners o JOIN family_members m ON m.user_id = o.user_id WHERE m.family_id = ?)")
+        sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT o.account_id FROM account_owners o JOIN family_members m ON m.user_id = o.user_id WHERE m.family_id = $1)")
             .bind(f.id)
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM families WHERE id = ?").bind(f.id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM families WHERE id = $1").bind(f.id).execute(&self.pool).await?;
         Ok(())
     }
 }
