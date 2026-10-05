@@ -1,0 +1,21 @@
+[package]
+name = "tracer"
+description = "tracer/fin: a household money tracker. One binary: REST server, MCP server (HTTP and stdio) and a CLI."
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "tracer"
+path = "src/main.rs"
+
+[dependencies]
+tracer-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["compression-gzip", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = "0.4"

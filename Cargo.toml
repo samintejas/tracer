@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/api", "crates/core"]
+members = ["crates/api", "crates/core", "crates/server"]
 # the Leptos frontend is a wasm crate with its own workspace and lockfile
 exclude = ["ui"]
 
