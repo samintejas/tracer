@@ -48,10 +48,24 @@ fn user_from(r: &sqlx::sqlite::SqliteRow) -> User {
         initials: r.get("initials"),
         phone: r.get("phone"),
         currency: r.get("currency"),
+        picture: r.get("picture"),
+        notify_card: r.get::<i64, _>("notify_card") != 0,
+        notify_emi: r.get::<i64, _>("notify_emi") != 0,
+        notify_joint: r.get::<i64, _>("notify_joint") != 0,
     }
 }
 
-const USER_COLS: &str = "id, name, email, initials, phone, currency";
+const USER_COLS: &str = "id, name, email, initials, phone, currency, picture, notify_card, notify_emi, notify_joint";
+
+/// Passwords are at least this long.
+pub const MIN_PASSWORD: usize = 12;
+
+fn check_password(pw: &str) -> Result<()> {
+    if pw.chars().count() < MIN_PASSWORD {
+        return Err(Error::bad(format!("password needs {MIN_PASSWORD} characters or more")));
+    }
+    Ok(())
+}
 
 fn check_email(e: &str) -> Result<String> {
     let e = clean(e).to_lowercase();
@@ -68,9 +82,7 @@ impl Store {
             return Err(Error::bad("enter your name"));
         }
         let email = check_email(&b.email)?;
-        if b.password.chars().count() < 8 {
-            return Err(Error::bad("password needs at least 8 characters"));
-        }
+        check_password(&b.password)?;
         let hash = hash_password(&b.password)?;
         let id = sqlx::query("INSERT INTO users (name, email, password_hash, initials) VALUES (?, ?, ?, ?)")
             .bind(&name)
@@ -186,12 +198,29 @@ impl Store {
         if !["inr", "usd", "eur"].contains(&currency.as_str()) {
             return Err(Error::bad("currency must be inr, usd or eur"));
         }
-        sqlx::query("UPDATE users SET name = ?, initials = ?, email = ?, phone = ?, currency = ? WHERE id = ?")
+        let picture = match b.picture {
+            None => u.picture.clone(),
+            Some(p) if p.is_empty() => None,
+            Some(p) => {
+                if !p.starts_with("data:image/") {
+                    return Err(Error::bad("the picture must be an image"));
+                }
+                if p.len() > 400_000 {
+                    return Err(Error::bad("the picture is too large: use one under 250 kb"));
+                }
+                Some(p)
+            }
+        };
+        sqlx::query("UPDATE users SET name = ?, initials = ?, email = ?, phone = ?, currency = ?, picture = ?, notify_card = ?, notify_emi = ?, notify_joint = ? WHERE id = ?")
             .bind(name)
-            .bind(initials.chars().take(3).collect::<String>())
+            .bind(initials.chars().take(2).collect::<String>())
             .bind(email)
             .bind(b.phone.map(|p| clean(&p)).unwrap_or(u.phone))
             .bind(currency)
+            .bind(picture)
+            .bind(b.notify_card.unwrap_or(u.notify_card) as i64)
+            .bind(b.notify_emi.unwrap_or(u.notify_emi) as i64)
+            .bind(b.notify_joint.unwrap_or(u.notify_joint) as i64)
             .bind(c.user_id)
             .execute(&self.pool)
             .await
@@ -204,9 +233,7 @@ impl Store {
 
     pub async fn change_password(&self, c: &Caller, b: ChangePassword) -> Result<()> {
         c.need("edit")?;
-        if b.new.chars().count() < 8 {
-            return Err(Error::bad("password needs at least 8 characters"));
-        }
+        check_password(&b.new)?;
         let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = ?")
             .bind(c.user_id)
             .fetch_one(&self.pool)
@@ -220,9 +247,7 @@ impl Store {
 
     /// Set a password directly. For the CLI (there is no email to send a reset link from).
     pub async fn set_password(&self, user_id: i64, password: &str) -> Result<()> {
-        if password.chars().count() < 8 {
-            return Err(Error::bad("password needs at least 8 characters"));
-        }
+        check_password(password)?;
         sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
             .bind(hash_password(password)?)
             .bind(user_id)
@@ -275,6 +300,56 @@ impl Store {
                 last_used_at: r.get("last_used_at"),
             })
             .collect())
+    }
+
+    /// Change what a connector token may do, without making a new token.
+    pub async fn update_connector(&self, c: &Caller, id: i64, b: UpdateConnector) -> Result<Connector> {
+        c.need("edit")?;
+        if let Some(bad) = b.scopes.iter().find(|s| !SCOPES.contains(&s.as_str())) {
+            return Err(Error::bad(format!("unknown scope '{bad}', use one of {SCOPES:?}")));
+        }
+        let n = sqlx::query("UPDATE tokens SET scopes = ? WHERE id = ? AND user_id = ? AND kind = 'connector'")
+            .bind(b.scopes.join(","))
+            .bind(id)
+            .bind(c.user_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("connector"));
+        }
+        self.connectors(c).await?.into_iter().find(|x| x.id == id).ok_or(Error::NotFound("connector"))
+    }
+
+    /// Sign out everywhere, this device included. Connector tokens keep working.
+    pub async fn sign_out_all(&self, c: &Caller) -> Result<()> {
+        sqlx::query("DELETE FROM tokens WHERE user_id = ? AND kind = 'session'").bind(c.user_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Delete the caller: their sign-in, the accounts only they own (with their transactions), and their
+    /// place in a family. Joint accounts stay with the other owners. Needs the password. Cannot be undone.
+    pub async fn delete_user(&self, c: &Caller, password: &str) -> Result<()> {
+        c.need("edit")?;
+        let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = ?").bind(c.user_id).fetch_one(&self.pool).await?.get(0);
+        if !verify_password(password, &hash) {
+            return Err(Error::Forbidden("password is wrong".into()));
+        }
+        self.leave_family(c).await?;
+        // what is left is owned by this person alone
+        let mine: Vec<i64> = sqlx::query("SELECT account_id FROM account_owners WHERE user_id = ?").bind(c.user_id).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect();
+        for id in mine {
+            self.remove_account(id).await?;
+        }
+        // their entries on accounts they no longer own are kept, under an owner of that account
+        sqlx::query(
+            "UPDATE transactions SET created_by = (SELECT o.user_id FROM account_owners o WHERE o.account_id = transactions.account_id LIMIT 1) WHERE created_by = ?",
+        )
+        .bind(c.user_id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM users WHERE id = ?").bind(c.user_id).execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn revoke_connector(&self, c: &Caller, id: i64) -> Result<()> {

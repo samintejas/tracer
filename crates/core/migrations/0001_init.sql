@@ -6,6 +6,10 @@ CREATE TABLE users (
     initials      TEXT NOT NULL,
     phone         TEXT NOT NULL DEFAULT '',
     currency      TEXT NOT NULL DEFAULT 'inr' CHECK (currency IN ('inr','usd','eur')),
+    picture       TEXT,                                -- a small image as a data: url
+    notify_card   INTEGER NOT NULL DEFAULT 1,
+    notify_emi    INTEGER NOT NULL DEFAULT 1,
+    notify_joint  INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -27,7 +31,8 @@ CREATE INDEX idx_tokens_user ON tokens(user_id);
 CREATE TABLE families (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
-    invite_code TEXT NOT NULL UNIQUE,
+    owner_id    INTEGER NOT NULL REFERENCES users(id),
+    invite_code TEXT UNIQUE,                           -- one-time: cleared when someone joins with it
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 -- one family per person
@@ -59,6 +64,7 @@ CREATE TABLE accounts (
     invest_kind    TEXT NOT NULL DEFAULT '',
     invested       INTEGER,
     sip            INTEGER,
+    sip_day        INTEGER,
     archived       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -105,8 +111,12 @@ CREATE TABLE attachments (
 CREATE TABLE notifications (
     id         INTEGER PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    text       TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    link       TEXT NOT NULL DEFAULT '',               -- where it leads in the app: 'transactions', 'accounts/3', 'settings/family'
+    key        TEXT,                                   -- set for reminders so each is made once
     read       INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, key)
 );
 CREATE INDEX idx_notes_user ON notifications(user_id, read);

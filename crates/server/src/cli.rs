@@ -97,9 +97,13 @@ pub enum TokenCmd {
 #[derive(Subcommand)]
 pub enum FamilyCmd {
     Create { name: String },
+    /// Make a one-time invite code (owner only).
+    Invite,
     Join { code: String },
     Show,
     Leave,
+    /// Delete the family (owner only). Everyone keeps what they own.
+    Delete,
 }
 
 #[derive(Args)]
@@ -310,6 +314,11 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
             let c = caller(&s, &cli.who).await?;
             match f {
                 FamilyCmd::Create { name } => print_family(&s.create_family(&c, NewFamily { name }).await?),
+                FamilyCmd::Invite => print_family(&s.generate_invite(&c).await?),
+                FamilyCmd::Delete => {
+                    s.delete_family(&c).await?;
+                    println!("family deleted");
+                }
                 FamilyCmd::Join { code } => print_family(&s.join_family(&c, JoinFamily { code }).await?),
                 FamilyCmd::Show => match s.me(&c).await?.family {
                     Some(f) => print_family(&f),
@@ -363,6 +372,7 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
                                 start: n.start,
                                 emi_day: n.emi_day,
                                 invested: opt_amount(&n.invested)?,
+                                sip_day: None,
                                 ..Default::default()
                             },
                         })
@@ -470,5 +480,8 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
 }
 
 fn print_family(f: &Family) {
-    println!("{}\ninvite code: {}\nmembers: {}", f.name, f.invite_code, f.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", "));
+    println!("{}\nmembers: {}", f.name, f.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", "));
+    if let Some(code) = &f.invite_code {
+        println!("invite code (works once): {code}");
+    }
 }

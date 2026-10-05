@@ -113,9 +113,11 @@ impl Store {
             }
         }
 
-        let days: Vec<DayTotal> = (0..28)
+        // four calendar weeks, monday first, ending with this week (days after today are left out)
+        let monday = now - Duration::days(now.weekday().num_days_from_monday() as i64 + 21);
+        let days: Vec<DayTotal> = (0..=(now - monday).num_days())
             .map(|i| {
-                let date = now - Duration::days(27 - i);
+                let date = monday + Duration::days(i);
                 let total = rows.iter().filter(|r| r.date == date && r.is_spend()).map(|r| -r.amount).sum();
                 DayTotal { date: date.to_string(), total }
             })

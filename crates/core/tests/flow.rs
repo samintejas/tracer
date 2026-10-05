@@ -25,7 +25,7 @@ fn spend(account_id: i64, amount: i64, desc: &str, tags: &[&str]) -> NewTransact
 }
 
 async fn user(s: &Store, name: &str) -> (Caller, User) {
-    let sess = s.sign_up(SignUp { name: name.into(), email: format!("{name}@x.example"), password: "correct horse".into() }).await.unwrap();
+    let sess = s.sign_up(SignUp { name: name.into(), email: format!("{name}@x.example"), password: "correct horse battery".into() }).await.unwrap();
     (s.authenticate(&sess.token).await.unwrap(), sess.user)
 }
 
@@ -35,9 +35,9 @@ async fn auth_and_scopes() {
     let (ana, u) = user(&s, "anita").await;
     assert_eq!(u.initials, "an");
     assert!(matches!(s.sign_in(SignIn { email: "anita@x.example".into(), password: "wrong".into() }).await, Err(Error::Unauthorized)));
-    assert!(s.sign_in(SignIn { email: "ANITA@x.example".into(), password: "correct horse".into() }).await.is_ok());
-    assert!(matches!(s.sign_up(SignUp { name: "x".into(), email: "anita@x.example".into(), password: "correct horse".into() }).await, Err(Error::Conflict(_))));
-    assert!(matches!(s.sign_up(SignUp { name: "x".into(), email: "x@y.example".into(), password: "short".into() }).await, Err(Error::BadRequest(_))));
+    assert!(s.sign_in(SignIn { email: "ANITA@x.example".into(), password: "correct horse battery".into() }).await.is_ok());
+    assert!(matches!(s.sign_up(SignUp { name: "x".into(), email: "anita@x.example".into(), password: "correct horse battery".into() }).await, Err(Error::Conflict(_))));
+    assert!(matches!(s.sign_up(SignUp { name: "x".into(), email: "x@y.example".into(), password: "too short".into() }).await, Err(Error::BadRequest(_))));
 
     let bank = s.create_account(&ana, acct("salary", AccountKind::Bank, 100_000_00)).await.unwrap();
     let made = s.create_connector(&ana, NewConnector { name: "claude".into(), scopes: vec!["read".into(), "transactions".into()] }).await.unwrap();
@@ -65,11 +65,20 @@ async fn balances_transfers_and_filters() {
     assert_eq!(s.account(&c, card.id).await.unwrap().balance, 0, "paying the card clears it");
     assert_eq!(s.account(&c, bank.id).await.unwrap().balance, 143_850_00);
     assert_eq!(t[0].counterpart_id, Some(card.id));
+    assert_eq!(t[0].description, "card bill, card");
+    assert_eq!(t[0].tags, vec!["transfer", "card payment"]);
 
     s.add_transaction(&c, spend(bank.id, 3_240_00, "groceries, weekly", &["groceries", "household"])).await.unwrap();
-    let page = s.transactions(&c, TxFilter { tags: Some("groceries".into()), ..Default::default() }).await.unwrap();
+    let page = s.transactions(&c, TxFilter { tags: Some("groceries,household".into()), ..Default::default() }).await.unwrap();
     assert_eq!(page.total, 1);
     assert_eq!(page.items[0].tags, vec!["groceries", "household"]);
+    assert_eq!(s.transactions(&c, TxFilter { tags: Some("groceries,dining".into()), ..Default::default() }).await.unwrap().total, 0, "tags must all match");
+    let all = s.transactions(&c, TxFilter { sort: Some("tag".into()), dir: Some("asc".into()), ..Default::default() }).await.unwrap();
+    assert_eq!((all.total_in, all.total_out), (0, 1_980_00 + 3_240_00), "transfers are neither in nor out");
+    // money out can be turned into money in
+    let flipped = s.update_transaction(&c, page.items[0].id, UpdateTransaction { kind: Some(TxKind::Credit), ..Default::default() }).await.unwrap();
+    assert_eq!(flipped.amount, 3_240_00);
+    s.update_transaction(&c, flipped.id, UpdateTransaction { kind: Some(TxKind::Debit), ..Default::default() }).await.unwrap();
     let page = s.transactions(&c, TxFilter { kinds: Some("transfer".into()), limit: Some(1), ..Default::default() }).await.unwrap();
     assert_eq!((page.total, page.items.len()), (2, 1));
     let page = s.transactions(&c, TxFilter { q: Some("WEEKLY".into()), sort: Some("amount".into()), dir: Some("asc".into()), ..Default::default() }).await.unwrap();
@@ -88,6 +97,17 @@ async fn balances_transfers_and_filters() {
 
     let tags = s.tags(&c).await.unwrap();
     assert!(tags.iter().any(|(t, _)| t == "dining"), "{tags:?}");
+
+    // deleting an account takes its transactions; the far side of a transfer stays as plain money
+    let t = s.transfer(&c, NewTransfer { from_account_id: bank.id, to_account_id: card.id, amount: 500_00, date: None, description: String::new(), tags: vec![], note: String::new() }).await.unwrap();
+    s.delete_account(&c, card.id).await.unwrap();
+    let left = s.transaction(&c, t[0].id).await.unwrap();
+    assert_eq!((left.kind, left.transfer_id), (TxKind::Debit, None));
+    assert_eq!(s.accounts(&c, true).await.unwrap().len(), 1);
+
+    // an untagged entry still gets a group
+    let plain = s.add_transaction(&c, spend(bank.id, 10_00, "x", &[])).await.unwrap();
+    assert_eq!(plain.tags, vec!["other"]);
 }
 
 #[tokio::test]
@@ -102,9 +122,15 @@ async fn family_visibility() {
 
     let fam = s.create_family(&a, NewFamily { name: "Rao Family".into() }).await.unwrap();
     assert_eq!(fam.name, "rao family");
+    assert!(fam.invite_code.is_none(), "no code until the owner asks for one");
     assert!(matches!(s.join_family(&v, JoinFamily { code: "NOPE-NOPE".into() }).await, Err(Error::BadRequest(_))));
-    s.join_family(&v, JoinFamily { code: fam.invite_code.to_lowercase() }).await.unwrap();
-    assert!(s.notifications(&a).await.unwrap()[0].text.contains("joined"));
+    let code = s.generate_invite(&a).await.unwrap().invite_code.unwrap();
+    let joined = s.join_family(&v, JoinFamily { code: code.to_lowercase() }).await.unwrap();
+    assert_eq!(joined.owner_id, au.id);
+    assert!(joined.invite_code.is_none());
+    assert!(matches!(s.join_family(&o, JoinFamily { code }).await, Err(Error::BadRequest(_))), "a code works once");
+    assert!(matches!(s.generate_invite(&v).await, Err(Error::Forbidden(_))), "members cannot invite");
+    assert!(s.notifications(&a).await.unwrap()[0].title.contains("joined"));
 
     let shared = s.create_account(&a, NewAccount { visibility: Visibility::Shared, ..acct("savings", AccountKind::Bank, 5_000_00) }).await.unwrap();
     let joint = s.create_account(&a, NewAccount { owner_ids: vec![vu.id], ..acct("household joint", AccountKind::Bank, 2_000_00) }).await.unwrap();
@@ -118,7 +144,7 @@ async fn family_visibility() {
     // shared is visible but not writable by the partner; joint is writable by both
     assert!(matches!(s.add_transaction(&v, spend(shared.id, 10_00, "x", &[])).await, Err(Error::Forbidden(_))));
     s.add_transaction(&v, spend(joint.id, 2_860_00, "electricity bill", &["utilities"])).await.unwrap();
-    assert!(s.notifications(&a).await.unwrap()[0].text.contains("vikram spent"));
+    assert!(s.notifications(&a).await.unwrap()[0].title.contains("vikram spent"));
     assert_eq!(s.transactions(&a, TxFilter::default()).await.unwrap().total, 1);
     assert_eq!(s.transactions(&o, TxFilter::default()).await.unwrap().total, 0);
 
@@ -129,8 +155,12 @@ async fn family_visibility() {
     assert_eq!(me.family.unwrap().members.len(), 2);
     assert_eq!(me.user.id, au.id);
 
+    assert!(matches!(s.delete_family(&v).await, Err(Error::Forbidden(_))));
     s.leave_family(&v).await.unwrap();
     assert_eq!(s.accounts(&v, false).await.unwrap().len(), 0, "leaver loses the joint account and the shared view");
+    s.delete_family(&a).await.unwrap();
+    assert!(s.me(&a).await.unwrap().family.is_none());
+    assert_eq!(s.accounts(&a, false).await.unwrap().len(), 3, "the owner keeps what they own");
 }
 
 #[tokio::test]
@@ -159,7 +189,12 @@ async fn loans_dues_and_ask() {
     assert_eq!(ins.owed, loan.balance + 38_920_00);
     assert_eq!(ins.months.len(), 6);
     assert_eq!(ins.months.last().unwrap().spending, 500_00);
-    assert_eq!(ins.days.len(), 28);
+    assert!((22..=28).contains(&ins.days.len()));
+    // the card is due on the 18th: a reminder appears only within three days of it
+    let notes = s.notifications(&c).await.unwrap();
+    let due_soon = (chrono::NaiveDate::parse_from_str(&ins.dues.iter().find(|d| d.account_id == card.id).unwrap().date, "%Y-%m-%d").unwrap() - now).num_days() <= 3;
+    assert_eq!(notes.iter().any(|n| n.title.starts_with("card payment due")), due_soon);
+    assert_eq!(s.notifications(&c).await.unwrap().len(), notes.len(), "a reminder is made once");
 
     let a = s.ask(&c, "when do my loans end?").await.unwrap();
     assert!(a.contains("home loan") && a.contains("months left"), "{a}");
@@ -180,4 +215,32 @@ async fn attachments() {
     assert_eq!(s.attachment(&c, a.id).await.unwrap().2, vec![1, 2, 3]);
     s.delete_attachment(&c, a.id).await.unwrap();
     assert!(s.transaction(&c, tx.id).await.unwrap().attachments.is_empty());
+}
+
+#[tokio::test]
+async fn profile_sessions_and_deleting_yourself() {
+    let s = Store::memory().await.unwrap();
+    let sess = s.sign_up(SignUp { name: "anita rao".into(), email: "a@x.example".into(), password: "correct horse battery".into() }).await.unwrap();
+    let c = s.authenticate(&sess.token).await.unwrap();
+    let u = s.update_profile(&c, UpdateProfile { picture: Some("data:image/png;base64,AAAA".into()), notify_joint: Some(false), currency: Some("usd".into()), ..Default::default() }).await.unwrap();
+    assert!(u.picture.is_some() && !u.notify_joint && u.notify_card && u.currency == "usd");
+    assert!(s.update_profile(&c, UpdateProfile { picture: Some("javascript:alert(1)".into()), ..Default::default() }).await.is_err());
+    assert!(s.update_profile(&c, UpdateProfile { picture: Some(String::new()), ..Default::default() }).await.unwrap().picture.is_none());
+
+    let bank = s.create_account(&c, acct("salary", AccountKind::Bank, 100_00)).await.unwrap();
+    s.add_transaction(&c, spend(bank.id, 10_00, "x", &["a"])).await.unwrap();
+    let csv = s.export_csv(&c).await.unwrap();
+    assert!(csv.contains("salary") && csv.contains("-10.00"), "{csv}");
+
+    let made = s.create_connector(&c, NewConnector { name: "mcp".into(), scopes: vec!["read".into()] }).await.unwrap();
+    let up = s.update_connector(&c, made.connector.id, UpdateConnector { scopes: vec!["read".into(), "add".into()] }).await.unwrap();
+    assert_eq!(up.scopes, vec!["read", "add"]);
+
+    s.sign_out_all(&c).await.unwrap();
+    assert!(matches!(s.authenticate(&sess.token).await, Err(Error::Unauthorized)));
+    assert!(s.authenticate(&made.token).await.is_ok(), "connector tokens survive a sign-out");
+
+    assert!(matches!(s.delete_user(&c, "wrong").await, Err(Error::Forbidden(_))));
+    s.delete_user(&c, "correct horse battery").await.unwrap();
+    assert!(matches!(s.sign_in(SignIn { email: "a@x.example".into(), password: "correct horse battery".into() }).await, Err(Error::Unauthorized)));
 }

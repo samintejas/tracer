@@ -42,7 +42,8 @@ tracer tx transfer salary "card, anita" 20000
 tracer tx list --tag groceries
 tracer summary
 tracer ask "when do my loans end?"
-tracer family create "rao family"        # prints an invite code; the partner runs `family join <code>`
+tracer family create "rao family"
+tracer family invite                     # a one-time code; the other person runs `family join <code>`
 tracer token create claude --scopes read,transactions,add
 ```
 

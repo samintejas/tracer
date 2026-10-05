@@ -14,7 +14,7 @@ fn invite_code() -> String {
 
 impl Store {
     pub(crate) async fn family(&self, user_id: i64) -> Result<Option<Family>> {
-        let Some(f) = sqlx::query("SELECT f.id, f.name, f.invite_code FROM families f JOIN family_members m ON m.family_id = f.id WHERE m.user_id = ?")
+        let Some(f) = sqlx::query("SELECT f.id, f.name, f.owner_id, f.invite_code FROM families f JOIN family_members m ON m.family_id = f.id WHERE m.user_id = ?")
             .bind(user_id)
             .fetch_optional(&self.pool)
             .await?
@@ -22,14 +22,18 @@ impl Store {
             return Ok(None);
         };
         let id: i64 = f.get("id");
-        let members = sqlx::query("SELECT u.id, u.name, u.initials FROM users u JOIN family_members m ON m.user_id = u.id WHERE m.family_id = ? ORDER BY u.id")
+        let owner_id: i64 = f.get("owner_id");
+        let members = sqlx::query("SELECT u.id, u.name, u.initials, u.email FROM users u JOIN family_members m ON m.user_id = u.id WHERE m.family_id = ? ORDER BY u.id = ? DESC, u.id")
             .bind(id)
+            .bind(owner_id)
             .fetch_all(&self.pool)
             .await?
             .iter()
-            .map(|r| Member { id: r.get("id"), name: r.get("name"), initials: r.get("initials") })
+            .map(|r| Member { id: r.get("id"), name: r.get("name"), initials: r.get("initials"), email: r.get("email") })
             .collect();
-        Ok(Some(Family { id, name: f.get("name"), invite_code: f.get("invite_code"), members }))
+        // only the owner sees the code
+        let invite_code = if owner_id == user_id { f.get("invite_code") } else { None };
+        Ok(Some(Family { id, name: f.get("name"), owner_id, invite_code, members }))
     }
 
     pub async fn create_family(&self, c: &Caller, b: NewFamily) -> Result<Family> {
@@ -39,70 +43,101 @@ impl Store {
             return Err(Error::bad("name your family"));
         }
         if self.family(c.user_id).await?.is_some() {
-            return Err(Error::Conflict("you are already in a family; leave it first".into()));
+            return Err(Error::Conflict("you are already in a family".into()));
         }
-        let id = sqlx::query("INSERT INTO families (name, invite_code) VALUES (?, ?)")
-            .bind(&name)
-            .bind(invite_code())
-            .execute(&self.pool)
-            .await?
-            .last_insert_rowid();
+        let id = sqlx::query("INSERT INTO families (name, owner_id) VALUES (?, ?)").bind(&name).bind(c.user_id).execute(&self.pool).await?.last_insert_rowid();
         sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES (?, ?)").bind(id).bind(c.user_id).execute(&self.pool).await?;
+        self.family(c.user_id).await?.ok_or(Error::NotFound("family"))
+    }
+
+    /// Make a one-time invite code. A new code replaces the last unused one. Owner only.
+    pub async fn generate_invite(&self, c: &Caller) -> Result<Family> {
+        c.need("edit")?;
+        let f = self.family(c.user_id).await?.ok_or(Error::NotFound("family"))?;
+        if f.owner_id != c.user_id {
+            return Err(Error::Forbidden("only the family owner can invite".into()));
+        }
+        if f.members.len() >= 6 {
+            return Err(Error::Conflict("this family is full".into()));
+        }
+        sqlx::query("UPDATE families SET invite_code = ? WHERE id = ?").bind(invite_code()).bind(f.id).execute(&self.pool).await?;
         self.family(c.user_id).await?.ok_or(Error::NotFound("family"))
     }
 
     pub async fn join_family(&self, c: &Caller, b: JoinFamily) -> Result<Family> {
         c.need("edit")?;
         if self.family(c.user_id).await?.is_some() {
-            return Err(Error::Conflict("you are already in a family; leave it first".into()));
+            return Err(Error::Conflict("you are already in a family".into()));
         }
         let code = clean(&b.code).to_uppercase();
+        if code.is_empty() {
+            return Err(Error::bad("enter the invite code"));
+        }
         let id: i64 = sqlx::query("SELECT id FROM families WHERE invite_code = ?")
             .bind(&code)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| Error::bad("that invite code does not match a family"))?
+            .ok_or_else(|| Error::bad("that code does not match a family, or it was already used"))?
             .get(0);
-        let n: i64 = sqlx::query("SELECT COUNT(*) FROM family_members WHERE family_id = ?").bind(id).fetch_one(&self.pool).await?.get(0);
-        if n >= 6 {
-            return Err(Error::Conflict("this family is full".into()));
-        }
         sqlx::query("INSERT INTO family_members (family_id, user_id) VALUES (?, ?)").bind(id).bind(c.user_id).execute(&self.pool).await?;
+        // each code works once
+        sqlx::query("UPDATE families SET invite_code = NULL WHERE id = ?").bind(id).execute(&self.pool).await?;
         let me = self.user(c.user_id).await?;
-        let others = sqlx::query("SELECT user_id FROM family_members WHERE family_id = ? AND user_id <> ?")
-            .bind(id)
-            .bind(c.user_id)
-            .fetch_all(&self.pool)
-            .await?;
-        for o in others {
-            self.notify(o.get(0), &format!("{} joined your family", me.name)).await?;
+        let f = self.family(c.user_id).await?.ok_or(Error::NotFound("family"))?;
+        for m in f.members.iter().filter(|m| m.id != c.user_id) {
+            self.notify(m.id, &format!("{} joined {}", me.name, f.name), "shared and joint accounts are now visible to both of you", "settings/family", None).await?;
         }
-        self.family(c.user_id).await?.ok_or(Error::NotFound("family"))
+        Ok(f)
     }
 
-    /// Leave the family. Accounts you own become private again; the family is deleted when the last
-    /// person leaves.
-    pub async fn leave_family(&self, c: &Caller) -> Result<()> {
-        c.need("edit")?;
-        let Some(f) = self.family(c.user_id).await? else { return Ok(()) };
+    async fn drop_member(&self, user_id: i64) -> Result<()> {
         // a joint account stays with the people who are still together: the leaver drops off it
         sqlx::query(
             "DELETE FROM account_owners WHERE user_id = ? AND account_id IN \
              (SELECT account_id FROM account_owners GROUP BY account_id HAVING COUNT(*) > 1)",
         )
-        .bind(c.user_id)
+        .bind(user_id)
         .execute(&self.pool)
         .await?;
         sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT account_id FROM account_owners WHERE user_id = ?)")
-            .bind(c.user_id)
+            .bind(user_id)
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM family_members WHERE user_id = ?").bind(c.user_id).execute(&self.pool).await?;
-        sqlx::query("DELETE FROM families WHERE id = ? AND NOT EXISTS (SELECT 1 FROM family_members WHERE family_id = ?)")
-            .bind(f.id)
+        sqlx::query("DELETE FROM family_members WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Leave the family. Your accounts become private again and you drop off joint ones. If the owner
+    /// leaves, the longest-standing member becomes owner; the family goes when the last person does.
+    pub async fn leave_family(&self, c: &Caller) -> Result<()> {
+        c.need("edit")?;
+        let Some(f) = self.family(c.user_id).await? else { return Ok(()) };
+        self.drop_member(c.user_id).await?;
+        match f.members.iter().find(|m| m.id != c.user_id) {
+            None => {
+                sqlx::query("DELETE FROM families WHERE id = ?").bind(f.id).execute(&self.pool).await?;
+            }
+            Some(next) if f.owner_id == c.user_id => {
+                sqlx::query("UPDATE families SET owner_id = ? WHERE id = ?").bind(next.id).bind(f.id).execute(&self.pool).await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Delete the family: everyone goes back to a personal account and keeps what they own. Shared access
+    /// ends. Owner only.
+    pub async fn delete_family(&self, c: &Caller) -> Result<()> {
+        c.need("edit")?;
+        let f = self.family(c.user_id).await?.ok_or(Error::NotFound("family"))?;
+        if f.owner_id != c.user_id {
+            return Err(Error::Forbidden("only the family owner can delete it".into()));
+        }
+        sqlx::query("UPDATE accounts SET visibility = 'private' WHERE id IN (SELECT o.account_id FROM account_owners o JOIN family_members m ON m.user_id = o.user_id WHERE m.family_id = ?)")
             .bind(f.id)
             .execute(&self.pool)
             .await?;
+        sqlx::query("DELETE FROM families WHERE id = ?").bind(f.id).execute(&self.pool).await?;
         Ok(())
     }
 }

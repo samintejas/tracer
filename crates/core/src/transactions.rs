@@ -51,13 +51,8 @@ impl Store {
             qb.push(")");
         }
         let tags = norm_tags(&split(&f.tags));
-        if !tags.is_empty() {
-            qb.push(" AND EXISTS (SELECT 1 FROM tx_tags g WHERE g.tx_id = t.id AND g.tag IN (");
-            let mut sep = qb.separated(", ");
-            for t in tags {
-                sep.push_bind(t);
-            }
-            qb.push("))");
+        for t in tags {
+            qb.push(" AND EXISTS (SELECT 1 FROM tx_tags g WHERE g.tx_id = t.id AND g.tag = ").push_bind(t).push(")");
         }
         if let Some(d) = f.from.as_deref().filter(|s| !s.is_empty()) {
             qb.push(" AND t.date >= ").push_bind(d);
@@ -79,6 +74,12 @@ impl Store {
         let mut count = QueryBuilder::<Sqlite>::new("SELECT COUNT(*)");
         Self::push_filter(&mut count, c.user_id, &f);
         let total: i64 = count.build().fetch_one(&self.pool).await?.get(0);
+        let mut sums = QueryBuilder::<Sqlite>::new(
+            "SELECT COALESCE(SUM(CASE WHEN t.kind = 'credit' THEN t.amount ELSE 0 END), 0), COALESCE(SUM(CASE WHEN t.kind = 'debit' THEN -t.amount ELSE 0 END), 0)",
+        );
+        Self::push_filter(&mut sums, c.user_id, &f);
+        let sums = sums.build().fetch_one(&self.pool).await?;
+        let (total_in, total_out): (i64, i64) = (sums.get(0), sums.get(1));
 
         let mut qb = QueryBuilder::<Sqlite>::new(
             "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.note, t.transfer_id, t.created_by, \
@@ -91,13 +92,16 @@ impl Store {
         let order = match f.sort.as_deref() {
             Some("description") => format!("lower(t.description) {dir}, t.id DESC"),
             Some("amount") => format!("t.amount {dir}, t.id DESC"),
+            Some("tag") => format!("(SELECT g.tag FROM tx_tags g WHERE g.tx_id = t.id ORDER BY g.rowid LIMIT 1) {dir}, t.date DESC, t.id DESC"),
+            Some("account") => format!("lower(a.name) {dir}, t.date DESC, t.id DESC"),
+            Some("person") => format!("(SELECT lower(u.name) FROM users u WHERE u.id = t.created_by) {dir}, t.date DESC, t.id DESC"),
             _ => format!("t.date {dir}, t.id {dir}"),
         };
         qb.push(format!(" ORDER BY {order} LIMIT "));
         qb.push_bind(f.limit.unwrap_or(50).clamp(1, 500) as i64);
         qb.push(" OFFSET ").push_bind(f.offset.unwrap_or(0) as i64);
         let rows = qb.build().fetch_all(&self.pool).await?;
-        Ok(TxPage { items: self.hydrate(rows).await?, total })
+        Ok(TxPage { items: self.hydrate(rows).await?, total, total_in, total_out })
     }
 
     async fn hydrate(&self, rows: Vec<sqlx::sqlite::SqliteRow>) -> Result<Vec<Transaction>> {
@@ -116,7 +120,7 @@ impl Store {
         let mut tags: HashMap<i64, Vec<String>> = HashMap::new();
         let mut qb = QueryBuilder::<Sqlite>::new("SELECT tx_id, tag FROM tx_tags WHERE tx_id");
         in_list(&mut qb);
-        qb.push(" ORDER BY tag");
+        qb.push(" ORDER BY rowid");
         for r in qb.build().fetch_all(&self.pool).await? {
             tags.entry(r.get(0)).or_default().push(r.get(1));
         }
@@ -142,7 +146,7 @@ impl Store {
                     note: r.get("note"),
                     counterpart_id: r.get("counterpart_id"),
                     transfer_id: r.get("transfer_id"),
-                    created_by: Member { id: r.get("created_by"), name: r.get("by_name"), initials: r.get("by_initials") },
+                    created_by: Member { id: r.get("created_by"), name: r.get("by_name"), initials: r.get("by_initials"), email: String::new() },
                     attachments: files.remove(&id).unwrap_or_default(),
                 }
             })
@@ -192,7 +196,12 @@ impl Store {
             .execute(&self.pool)
             .await?
             .last_insert_rowid();
-        self.set_tags(id, &norm_tags(&b.tags)).await?;
+        // the first tag groups it in insights, so there is always one
+        let mut tags = norm_tags(&b.tags);
+        if tags.is_empty() {
+            tags.push(if signed > 0 { "income".into() } else { "other".into() });
+        }
+        self.set_tags(id, &tags).await?;
         self.tell_others(c, &account, signed, &b.description).await?;
         self.transaction(c, id).await
     }
@@ -210,11 +219,16 @@ impl Store {
                 }
             }
         }
-        let amt = tracer_api::money::group_digits(signed, false);
         let what = if clean(desc).is_empty() { "a transaction".to_string() } else { clean(desc) };
         let verb = if signed < 0 { "spent" } else { "received" };
+        let first = me.name.split(' ').next().unwrap_or("someone");
         for p in people {
-            self.notify(p, &format!("{} {verb} {amt} ({what}) on {}", me.name, account.name)).await?;
+            let them = self.user(p).await?;
+            if !them.notify_joint {
+                continue;
+            }
+            let amt = crate::notify::show_money(signed, &them.currency);
+            self.notify(p, &format!("{first} {verb} {amt}"), &format!("{what} · {}", account.name), "transactions", None).await?;
         }
         Ok(())
     }
@@ -228,7 +242,21 @@ impl Store {
         let from = self.owned_account(c, b.from_account_id).await?;
         let to = self.account_unchecked(c.user_id, b.to_account_id).await?;
         let date = date_or_today(b.date.as_deref())?;
-        let desc = if clean(&b.description).is_empty() { format!("to {}", to.name) } else { clean(&b.description) };
+        // a transfer says what it was for when nobody typed it
+        let (auto, extra) = match to.kind {
+            AccountKind::Credit => (format!("card bill, {}", to.name), Some("card payment")),
+            AccountKind::Loan => (format!("emi, {}", to.name), Some("emi")),
+            AccountKind::Investment => (format!("invested in {}", to.name), Some("investment")),
+            AccountKind::Bank => (format!("to {}", to.name), None),
+        };
+        let mut tags: Vec<String> = vec!["transfer".into()];
+        tags.extend(extra.map(String::from));
+        for t in norm_tags(&b.tags) {
+            if !tags.contains(&t) {
+                tags.push(t);
+            }
+        }
+        let desc = if clean(&b.description).is_empty() { auto } else { clean(&b.description) };
         let back = format!("from {}", from.name);
         let mut ids = Vec::new();
         for (acct, amt, d) in [(from.id, -amount, desc.clone()), (to.id, amount, if clean(&b.description).is_empty() { back } else { desc })] {
@@ -246,7 +274,7 @@ impl Store {
         }
         for id in &ids {
             sqlx::query("UPDATE transactions SET transfer_id = ? WHERE id = ?").bind(ids[0]).bind(id).execute(&self.pool).await?;
-            self.set_tags(*id, &norm_tags(&b.tags)).await?;
+            self.set_tags(*id, &tags).await?;
         }
         self.tell_others(c, &to, amount, &format!("transfer from {}", from.name)).await?;
         let mut out = Vec::new();
@@ -294,6 +322,17 @@ impl Store {
             }
             sqlx::query("UPDATE transactions SET updated_at = datetime('now') WHERE id = ?").bind(leg).execute(&self.pool).await?;
         }
+        if let Some(kind) = b.kind.filter(|k| *k != tx.kind) {
+            if tx.transfer_id.is_some() || kind == TxKind::Transfer {
+                return Err(Error::bad("a transfer cannot become money in or out, or the other way; delete it and add a new one"));
+            }
+            sqlx::query("UPDATE transactions SET kind = ?, amount = CASE WHEN ? = 'debit' THEN -ABS(amount) ELSE ABS(amount) END WHERE id = ?")
+                .bind(kind.as_str())
+                .bind(kind.as_str())
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
         if let Some(acct) = b.account_id.filter(|a| *a != tx.account_id) {
             if tx.transfer_id.is_some() {
                 return Err(Error::bad("a transfer cannot be moved to another account; delete it and add a new one"));
@@ -326,6 +365,40 @@ impl Store {
         );
         let rows = sqlx::query(AssertSqlSafe(sql)).fetch_all(&self.pool).await?;
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Everything the caller can see, as one csv: accounts first, then transactions, newest first.
+    pub async fn export_csv(&self, c: &Caller) -> Result<String> {
+        c.need("read")?;
+        c.need("transactions")?;
+        fn cell(s: &str) -> String {
+            if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
+        }
+        let accounts = self.accounts(c, true).await?;
+        let mut out = String::from("accounts\nname,kind,owners,who sees it,balance\n");
+        for a in &accounts {
+            let owners = a.owners.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join(" and ");
+            let vis = if a.joint { "joint" } else { a.visibility.as_str() };
+            let bal = if a.kind.is_liability() { -a.balance } else { a.balance };
+            out.push_str(&format!("{},{},{},{},{}\n", cell(&a.name), a.kind.as_str(), cell(&owners), vis, tracer_api::money::format_minor(bal)));
+        }
+        out.push_str("\ntransactions\ndate,description,tags,account,kind,amount,by,note\n");
+        let mut offset = 0;
+        loop {
+            let page = self.transactions(c, TxFilter { limit: Some(500), offset: Some(offset), ..Default::default() }).await?;
+            for t in &page.items {
+                let acct = accounts.iter().find(|a| a.id == t.account_id).map(|a| a.name.as_str()).unwrap_or("");
+                out.push_str(&format!(
+                    "{},{},{},{},{},{},{},{}\n",
+                    t.date, cell(&t.description), cell(&t.tags.join(" ")), cell(acct), t.kind.as_str(), tracer_api::money::format_minor(t.amount), cell(&t.created_by.name), cell(&t.note)
+                ));
+            }
+            offset += 500;
+            if page.items.len() < 500 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     // ---- attachments ---------------------------------------------------------------------------------

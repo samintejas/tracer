@@ -64,13 +64,17 @@ pub fn router(store: Store, ui_dir: PathBuf) -> Router {
         .route("/auth/signup", post(sign_up))
         .route("/auth/signin", post(sign_in))
         .route("/auth/signout", post(sign_out))
+        .route("/auth/signout-all", post(sign_out_all))
         .route("/auth/reset", post(reset))
-        .route("/me", get(me).patch(update_me))
+        .route("/me", get(me).patch(update_me).delete(delete_me))
+        .route("/export.csv", get(export_csv))
         .route("/me/password", post(password))
-        .route("/family", post(create_family).delete(leave_family))
+        .route("/family", post(create_family).delete(delete_family))
+        .route("/family/invite", post(invite))
+        .route("/family/leave", post(leave_family))
         .route("/family/join", post(join_family))
         .route("/accounts", get(accounts).post(create_account))
-        .route("/accounts/{id}", get(account).patch(update_account))
+        .route("/accounts/{id}", get(account).patch(update_account).delete(delete_account))
         .route("/transactions", get(transactions).post(add_transaction))
         .route("/transactions/{id}", get(transaction).patch(update_transaction).delete(delete_transaction))
         .route("/transactions/{id}/attachments", post(add_attachment))
@@ -82,7 +86,7 @@ pub fn router(store: Store, ui_dir: PathBuf) -> Router {
         .route("/notifications", get(notifications))
         .route("/notifications/read", post(read_notifications))
         .route("/connectors", get(connectors).post(create_connector))
-        .route("/connectors/{id}", delete(revoke_connector))
+        .route("/connectors/{id}", delete(revoke_connector).patch(update_connector))
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024));
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -155,6 +159,44 @@ async fn create_family(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<N
 
 async fn join_family(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<JoinFamily>) -> R<Family> {
     Ok(Json(s.join_family(&c, b).await?))
+}
+
+async fn delete_family(State(s): State<Store>, Auth(c, _): Auth) -> R<Value> {
+    s.delete_family(&c).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn invite(State(s): State<Store>, Auth(c, _): Auth) -> R<Family> {
+    Ok(Json(s.generate_invite(&c).await?))
+}
+
+async fn sign_out_all(State(s): State<Store>, Auth(c, _): Auth) -> R<Value> {
+    s.sign_out_all(&c).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct Password {
+    password: String,
+}
+
+async fn delete_me(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<Password>) -> R<Value> {
+    s.delete_user(&c, &b.password).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn export_csv(State(s): State<Store>, Auth(c, _): Auth) -> Result<Response, ApiError> {
+    let csv = s.export_csv(&c).await?;
+    Ok(([(CONTENT_TYPE, "text/csv; charset=utf-8"), (CONTENT_DISPOSITION, "attachment; filename=\"tracer-fin.csv\"")], csv).into_response())
+}
+
+async fn delete_account(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>) -> R<Value> {
+    s.delete_account(&c, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn update_connector(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>, Json(b): Json<UpdateConnector>) -> R<Connector> {
+    Ok(Json(s.update_connector(&c, id, b).await?))
 }
 
 async fn leave_family(State(s): State<Store>, Auth(c, _): Auth) -> R<Value> {

@@ -15,6 +15,18 @@ pub struct User {
     pub phone: String,
     /// `inr`, `usd` or `eur`: how amounts are written. The stored numbers do not change.
     pub currency: String,
+    /// Profile picture as a `data:image/…` url, when one is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// Remind about card due dates.
+    #[serde(default)]
+    pub notify_card: bool,
+    /// Remind about loan emis.
+    #[serde(default)]
+    pub notify_emi: bool,
+    /// Tell me when someone else adds to an account I can see.
+    #[serde(default)]
+    pub notify_joint: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,13 +34,18 @@ pub struct Member {
     pub id: i64,
     pub name: String,
     pub initials: String,
+    /// Filled in family listings.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub email: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Family {
     pub id: i64,
     pub name: String,
-    pub invite_code: String,
+    pub owner_id: i64,
+    /// A one-time code, present after the owner generates one and until someone uses it.
+    pub invite_code: Option<String>,
     pub members: Vec<Member>,
 }
 
@@ -65,6 +82,11 @@ pub struct UpdateProfile {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub currency: Option<String>,
+    /// A `data:image/…` url, or an empty string to remove the picture.
+    pub picture: Option<String>,
+    pub notify_card: Option<bool>,
+    pub notify_emi: Option<bool>,
+    pub notify_joint: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +205,9 @@ pub struct AccountDetails {
     pub invested: Option<i64>,
     #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
     pub sip: Option<i64>,
+    /// investment: day of month the sip leaves
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sip_day: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -338,6 +363,8 @@ pub struct UpdateTransaction {
     pub tags: Option<Vec<String>>,
     pub note: Option<String>,
     pub account_id: Option<i64>,
+    /// `debit` or `credit`, to turn money out into money in or back. Not for transfers.
+    pub kind: Option<TxKind>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -349,7 +376,7 @@ pub struct TxFilter {
     pub member_id: Option<i64>,
     /// Comma separated kinds: `debit,credit,transfer`.
     pub kinds: Option<String>,
-    /// Comma separated tags; a transaction matches when it has any.
+    /// Comma separated tags; a transaction matches when it has all of them.
     pub tags: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -357,7 +384,7 @@ pub struct TxFilter {
     pub q: Option<String>,
     /// Show each transfer once (its outgoing leg) instead of as two rows.
     pub collapse_transfers: Option<bool>,
-    /// `date`, `description`, `amount` (default `date`)
+    /// `date`, `description`, `tag`, `account`, `person`, `amount` (default `date`)
     pub sort: Option<String>,
     /// `asc` or `desc` (default `desc`)
     pub dir: Option<String>,
@@ -370,6 +397,11 @@ pub struct TxPage {
     pub items: Vec<Transaction>,
     /// Total matching the filter, ignoring limit and offset.
     pub total: i64,
+    /// Money in and out over everything matching the filter (transfers not counted).
+    #[serde(with = "money::val")]
+    pub total_in: i64,
+    #[serde(with = "money::val")]
+    pub total_out: i64,
 }
 
 // ---- insights ------------------------------------------------------------------------------------------
@@ -422,7 +454,7 @@ pub struct Insights {
     pub categories: Vec<CategoryTotal>,
     /// The last six months.
     pub months: Vec<MonthFlow>,
-    /// Daily spending for the last four weeks.
+    /// Daily spending from the monday three weeks before this week's, up to today.
     pub days: Vec<DayTotal>,
     pub dues: Vec<Due>,
     pub loans: Vec<Account>,
@@ -453,7 +485,10 @@ pub struct Answer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     pub id: i64,
-    pub text: String,
+    pub title: String,
+    pub body: String,
+    /// Where it leads in the app: `transactions`, `accounts/3`, `insights`, `settings/family`, or empty.
+    pub link: String,
     pub created_at: String,
     pub read: bool,
 }
@@ -471,6 +506,11 @@ pub struct Connector {
     pub tail: String,
     pub created_at: String,
     pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateConnector {
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

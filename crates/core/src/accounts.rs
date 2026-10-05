@@ -26,6 +26,7 @@ fn details_from(r: &sqlx::sqlite::SqliteRow) -> AccountDetails {
         invest_kind: r.get("invest_kind"),
         invested: opt_i(r, "invested"),
         sip: opt_i(r, "sip"),
+        sip_day: opt_i(r, "sip_day").map(|v| v as u32),
     }
 }
 
@@ -40,6 +41,7 @@ fn validate(kind: AccountKind, d: &AccountDetails) -> Result<()> {
     check_day(d.statement_day, "statement day")?;
     check_day(d.due_day, "due day")?;
     check_day(d.emi_day, "emi day")?;
+    check_day(d.sip_day, "sip day")?;
     if kind == AccountKind::Loan {
         if d.loan_total.is_none_or(|t| t <= 0) {
             return Err(Error::bad("a loan needs the amount borrowed (loan_total)"));
@@ -68,7 +70,7 @@ impl Store {
             .await?;
         let mut m: HashMap<i64, Vec<Member>> = HashMap::new();
         for r in rows {
-            m.entry(r.get(0)).or_default().push(Member { id: r.get(1), name: r.get(2), initials: r.get(3) });
+            m.entry(r.get(0)).or_default().push(Member { id: r.get(1), name: r.get(2), initials: r.get(3), email: String::new() });
         }
         Ok(m)
     }
@@ -183,7 +185,7 @@ impl Store {
         let d = &b.details;
         let id = sqlx::query(
             "INSERT INTO accounts (name, kind, visibility, opening, institution, last4, credit_limit, statement_day, due_day, \
-             loan_total, rate, tenure, start, emi, emi_day, invest_kind, invested, sip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             loan_total, rate, tenure, start, emi, emi_day, invest_kind, invested, sip, sip_day) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&name)
         .bind(b.kind.as_str())
@@ -203,6 +205,7 @@ impl Store {
         .bind(clean(&d.invest_kind).to_lowercase())
         .bind(d.invested)
         .bind(d.sip)
+        .bind(d.sip_day)
         .execute(&self.pool)
         .await?
         .last_insert_rowid();
@@ -210,6 +213,26 @@ impl Store {
             sqlx::query("INSERT INTO account_owners (account_id, user_id) VALUES (?, ?)").bind(id).bind(o).execute(&self.pool).await?;
         }
         self.account_unchecked(c.user_id, id).await
+    }
+
+    /// Delete an account and its transactions. The other side of a transfer stays, as plain money in or
+    /// out. Owner only. Cannot be undone.
+    pub async fn delete_account(&self, c: &Caller, id: i64) -> Result<()> {
+        c.need("edit")?;
+        self.owned_account(c, id).await?;
+        self.remove_account(id).await
+    }
+
+    pub(crate) async fn remove_account(&self, id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE transactions SET kind = CASE WHEN amount < 0 THEN 'debit' ELSE 'credit' END, transfer_id = NULL \
+             WHERE account_id <> ?1 AND transfer_id IN (SELECT transfer_id FROM transactions WHERE account_id = ?1 AND transfer_id IS NOT NULL)",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn update_account(&self, c: &Caller, id: i64, b: UpdateAccount) -> Result<Account> {
@@ -249,7 +272,7 @@ impl Store {
             validate(a.kind, &merged)?;
             sqlx::query(
                 "UPDATE accounts SET institution=?, last4=?, credit_limit=?, statement_day=?, due_day=?, loan_total=?, rate=?, tenure=?, \
-                 start=?, emi=?, emi_day=?, invest_kind=?, invested=?, sip=? WHERE id = ?",
+                 start=?, emi=?, emi_day=?, invest_kind=?, invested=?, sip=?, sip_day=? WHERE id = ?",
             )
             .bind(&merged.institution)
             .bind(&merged.last4)
@@ -265,6 +288,7 @@ impl Store {
             .bind(&merged.invest_kind)
             .bind(merged.invested)
             .bind(merged.sip)
+            .bind(merged.sip_day)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -291,5 +315,6 @@ fn merge_details(old: &AccountDetails, new: &AccountDetails) -> AccountDetails {
         invest_kind: text(&old.invest_kind, &new.invest_kind),
         invested: new.invested.or(old.invested),
         sip: new.sip.or(old.sip),
+        sip_day: new.sip_day.or(old.sip_day),
     }
 }
