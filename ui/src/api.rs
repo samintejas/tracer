@@ -165,3 +165,26 @@ pub async fn insights(member: Option<i64>) -> Result<Insights, ApiError> {
     let q = serde_urlencoded::to_string(InsightsQuery { member_id: member, days: None }).unwrap_or_default();
     get(&format!("/insights?{q}")).await
 }
+
+/// Fetch a file with the token and hand it to the browser to save.
+pub async fn download(path: &str, filename: &str) -> Result<(), ApiError> {
+    use wasm_bindgen::JsCast;
+    let res = auth(Request::get(&format!("/api{path}"))).send().await.map_err(net)?;
+    if !res.ok() {
+        return Err(ApiError { status: res.status(), message: "could not export".into() });
+    }
+    let text = res.text().await.map_err(net)?;
+    let parts = js_sys::Array::of1(&wasm_bindgen::JsValue::from_str(&text));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("text/csv");
+    let fail = || ApiError { status: 0, message: "could not export".into() };
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts).map_err(|_| fail())?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| fail())?;
+    let doc = web_sys::window().and_then(|w| w.document()).ok_or_else(fail)?;
+    let a: web_sys::HtmlAnchorElement = doc.create_element("a").map_err(|_| fail())?.dyn_into().map_err(|_| fail())?;
+    a.set_href(&url);
+    a.set_download(filename);
+    a.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}

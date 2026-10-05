@@ -1,0 +1,73 @@
+/* tracer/fin screens. Everything here is layout or a data mark that the dots system does not ship;
+   colours, type and controls all come from dots tokens and classes. */
+.d-shell { --rightbar-w: 380px; }
+/* with the 16px the shell already gives main, this makes the 24px 16px the screens are drawn at */
+.page { padding: 8px 0; }
+
+/* notifications panel */
+.nt { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; width: 100%; padding: 12px 16px; line-height: 1.4; border: 0; border-top: 1px solid var(--border-default); background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.nt:hover, .nt:focus-visible { background: var(--bg-hover); }
+.nt__dot { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
+
+/* add account: steps */
+.aj-steps { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; padding: 0 0 12px; list-style: none; border-bottom: 1px solid var(--border-default); }
+.aj-steps li { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+.aj-steps b { display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--border-strong); border-radius: 50%; font-size: var(--font-size-xs); font-weight: 500; }
+.aj-steps li[data-s="on"] { color: var(--text-strong); }
+.aj-steps li[data-s="on"] b { border-color: var(--focus-ring); color: var(--text-strong); }
+.aj-steps li[data-s="done"] b { background: var(--bg-hover); color: var(--text-strong); }
+
+/* insights: a value draws or grows once */
+.ins-grow { transform-origin: left; animation: ins-grow var(--dur-slow) var(--ease-out) both; }
+.ins-line { stroke-dasharray: 4000; stroke-dashoffset: 4000; animation: ins-draw 1s var(--ease-out) forwards; }
+@keyframes ins-grow { from { transform: scaleX(0); } }
+@keyframes ins-draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .ins-grow { animation: none; } .ins-line { animation: none; stroke-dashoffset: 0; } }
+
+.d-avatar:has(svg), .d-avatar:has(img) { border-radius: 9999px; }
+
+/* insights grid: fills the screen under the bar, cards share the height */
+.dash-wrap { display: flex; flex-direction: column; gap: 16px; height: calc(100dvh - 80px); min-height: 560px; }
+.dash { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1.25fr) auto; gap: 12px; }
+.dash > .d-card { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.dash > .d-card > .d-card__body { flex: 1; min-height: 0; overflow: hidden; }
+@media (max-width: 900px) { .dash-wrap { height: auto; } .dash { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; } .dash > .d-card { overflow: visible; } }
+
+/* transactions: the table scrolls inside the screen, the pager stays put */
+.tx-wrap { height: calc(100dvh - 80px); min-height: 440px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.cell-btn { width: 100%; min-height: 24px; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: inherit; cursor: text; }
+.cell-in { height: 24px; padding: 0 4px; }
+@media (max-width: 900px) { .tx-wrap { height: auto; } }
+
+/* settings: a vertical list of sections beside the open one */
+.set { display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 24px; height: calc(100dvh - 80px); min-height: 560px; }
+.set__nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding-right: 16px; border-right: 1px solid var(--border-default); }
+.set__tab { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border: 0; border-left: 2px solid transparent; background: none; color: var(--text-primary); font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.set__tab:hover { background: var(--bg-hover); color: var(--text-strong); }
+.set__tab[aria-selected="true"] { background: var(--bg-hover); border-left-color: var(--mark); color: var(--text-max); }
+.set__panel { min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+.set__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px; align-items: start; }
+.set__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--border-default); }
+.set__row:first-child { border-top: 0; padding-top: 0; }
+.set__row:last-child { padding-bottom: 0; }
+@media (max-width: 900px), (max-height: 640px) { .set { grid-template-columns: minmax(0, 1fr); height: auto; } .set__nav { flex-direction: row; flex-wrap: wrap; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--border-default); } .set__panel { overflow: visible; } }
+
+/* the big amount field and the segmented choice in the side panel */
+.amt:focus-within { box-shadow: inset 0 -1px 0 var(--focus-ring); }
+.seg { display: flex; flex: none; background: var(--bg-inset); border-radius: var(--radius-sm); overflow: hidden; }
+.seg__opt { flex: 1 1 0; min-width: 0; height: 36px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-weight: 500; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.seg__opt:hover { background: var(--bg-hover); color: var(--text-strong); }
+.seg__opt[aria-pressed="true"] { background: var(--accent-primary-subtle); border-bottom-color: var(--accent-primary); color: var(--text-max); }
+.seg__opt:focus-visible { outline-offset: -2px; }
+.seg__opt:disabled { color: var(--text-disabled); cursor: default; background: none; }
+
+/* landing: the one decorated surface, outside the app chrome */
+.lp-hero { position: relative; overflow: hidden; background-image: radial-gradient(circle at center, var(--accent-primary-subtle) 0%, transparent 60%), radial-gradient(circle at center, var(--accent-info-subtle) 0%, transparent 60%); background-repeat: no-repeat; background-size: 640px 640px, 720px 720px; background-position: 95% -40%, 55% 160%; animation: lp-orbs 24s ease-in-out infinite alternate; }
+.lp-hero::before, .lp-hero::after { content: ""; position: absolute; inset: -24px; pointer-events: none; -webkit-mask-image: radial-gradient(ellipse 60% 90% at 78% 45%, #000 0%, transparent 75%); mask-image: radial-gradient(ellipse 60% 90% at 78% 45%, #000 0%, transparent 75%); }
+.lp-hero::before { background-image: radial-gradient(var(--neutral-5) 1px, transparent 1.5px); background-size: 24px 24px; animation: lp-drift 48s linear infinite; }
+.lp-hero::after { background-image: radial-gradient(var(--accent-primary) 1.5px, transparent 2.5px), radial-gradient(var(--accent-info) 1.5px, transparent 2.5px), radial-gradient(var(--accent-success) 1.5px, transparent 2.5px), radial-gradient(var(--accent-warning) 1.5px, transparent 2.5px); background-size: 168px 120px, 216px 168px, 264px 144px, 312px 216px; background-position: 36px 12px, 108px 84px, 60px 108px, 180px 36px; animation: lp-glow 6s ease-in-out infinite; }
+.lp-hero > * { position: relative; z-index: 1; }
+@keyframes lp-drift { to { transform: translate(24px, 24px); } }
+@keyframes lp-glow { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
+@keyframes lp-orbs { to { background-position: 75% -10%, 70% 130%; } }
+@media (prefers-reduced-motion: reduce) { .lp-hero, .lp-hero::before, .lp-hero::after { animation: none; } }

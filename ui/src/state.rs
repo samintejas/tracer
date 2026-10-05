@@ -13,6 +13,8 @@ pub struct AppState {
     pub tags: RwSignal<Vec<String>>,
     pub notes: RwSignal<Vec<Notification>>,
     pub rev: RwSignal<u32>,
+    /// The transaction open in the side panel.
+    pub panel: RwSignal<Option<Transaction>>,
     pub toasts: Toasts,
 }
 
@@ -24,6 +26,7 @@ impl AppState {
             tags: RwSignal::new(Vec::new()),
             notes: RwSignal::new(Vec::new()),
             rev: RwSignal::new(0),
+            panel: RwSignal::new(None),
             toasts: use_toasts(),
         }
     }
@@ -43,11 +46,22 @@ impl AppState {
     /// Family members (just you when there is no family).
     pub fn members(&self) -> Vec<Member> {
         self.me.with(|m| match m {
-            Some(me) => me.family.as_ref().map(|f| f.members.clone()).unwrap_or_else(|| vec![Member { id: me.user.id, name: me.user.name.clone(), initials: me.user.initials.clone() }]),
+            Some(me) => me.family.as_ref().map(|f| f.members.clone()).unwrap_or_else(|| vec![Member { id: me.user.id, name: me.user.name.clone(), initials: me.user.initials.clone(), email: me.user.email.clone() }]),
             None => vec![],
         })
     }
 
+    /// In a family at all (even alone in it).
+    pub fn in_family(&self) -> bool {
+        self.me.with(|m| m.as_ref().is_some_and(|m| m.family.is_some()))
+    }
+
+    /// The family's name, or `personal`.
+    pub fn root_name(&self) -> String {
+        self.me.with(|m| m.as_ref().and_then(|m| m.family.as_ref().map(|f| f.name.clone())).unwrap_or_else(|| "personal".into()))
+    }
+
+    /// More than one person: columns and filters about people make sense.
     pub fn has_family(&self) -> bool {
         self.me.with(|m| m.as_ref().is_some_and(|m| m.family.as_ref().is_some_and(|f| f.members.len() > 1)))
     }
@@ -72,6 +86,12 @@ impl AppState {
 
     pub fn ok(&self, text: &str) {
         self.toasts.push(Toast::success(text));
+    }
+
+    /// Say what went wrong, in a toast. The text starts with `error:`.
+    pub fn error(&self, text: impl Into<String>) {
+        let t: String = text.into();
+        self.toasts.push(Toast::danger(if t.starts_with("error:") { t } else { format!("error: {t}") }));
     }
 
     pub fn fail(&self, e: &api::ApiError) {

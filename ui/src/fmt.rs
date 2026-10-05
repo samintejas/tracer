@@ -52,3 +52,25 @@ pub fn days_ago(n: i32) -> String {
     d.set_date((d.get_date() as i32 - n) as u32);
     format!("{:04}-{:02}-{:02}", d.get_full_year(), d.get_month() + 1, d.get_date())
 }
+
+/// `2034-03` to `mar 2034`.
+pub fn month_year(ym: &str) -> String {
+    format!("{} {}", month(ym), ym.get(..4).unwrap_or(""))
+}
+
+/// `5` to `5th`.
+pub fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (1, 11) | (2, 12) | (3, 13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// `45%` of a whole, `0%` when there is none.
+pub fn pct(part: i64, whole: i64) -> String {
+    if whole == 0 { "0%".into() } else { format!("{}%", ((part as f64) / (whole as f64) * 100.0).round() as i64) }
+}

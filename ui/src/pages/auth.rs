@@ -6,27 +6,18 @@ use tracer_api::*;
 
 use crate::api;
 
-/// `/`: to the app when signed in, else to sign in.
 #[component]
-pub fn Home() -> impl IntoView {
-    let nav = use_navigate();
-    Effect::new(move |_| {
-        nav(if api::load_token().is_some() { "/transactions" } else { "/signin" }, Default::default());
-    });
-}
-
-#[component]
-fn AuthPage(title: &'static str, sub: &'static str, other: AnyView, children: Children) -> impl IntoView {
+fn AuthPage(title: &'static str, sub: &'static str, other: AnyView, #[prop(default = 380)] width: u32, children: Children) -> impl IntoView {
     view! {
         <SkipLink/>
         <div style="min-height:100dvh;display:flex;flex-direction:column;background:var(--bg-base)">
             <AppBar>
-                <A href="/signin" attr:class="d-appbar__title" attr:style="text-decoration:none">"tracer/fin"</A>
+                <A href="/" attr:class="d-appbar__title" attr:style="text-decoration:none">"tracer/fin"</A>
                 <AppBarSpacer/>
                 {other}
             </AppBar>
             <main id="main" tabindex="-1" style="flex:1;display:flex;align-items:center;justify-content:center;padding:48px 16px">
-                <div class="d-card" style="width:100%;max-width:380px">
+                <div class="d-card" style=format!("width:100%;max-width:{width}px")>
                     <div class="d-card__body" style="padding:24px;display:flex;flex-direction:column;gap:16px">
                         <div style="display:flex;flex-direction:column;gap:4px">
                             <h1 class="heading-xl">{title}</h1>
@@ -110,11 +101,11 @@ pub fn SignUp() -> impl IntoView {
         });
     };
     view! {
-        <AuthPage title="create an account" sub="your money, in one place." other=other("have an account?", "/signin", "sign in")>
+        <AuthPage title="create an account" sub="for you alone. a family is optional and can be added later in settings." width=420 other=other("have an account?", "/signin", "sign in")>
             <form on:submit=submit style="display:flex;flex-direction:column;gap:16px">
                 <TextField label="name" value=name size=Size::Lg autocomplete="name"/>
                 <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email"/>
-                <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="new-password" hint="at least 8 characters" error=err/>
+                <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="new-password" hint="12 characters or more" error=err/>
                 <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"create account"</Button>
             </form>
         </AuthPage>
@@ -125,8 +116,7 @@ pub fn SignUp() -> impl IntoView {
 pub fn Reset() -> impl IntoView {
     let email = RwSignal::new(String::new());
     let (busy, sent) = (RwSignal::new(false), RwSignal::new(false));
-    let submit = move |e: leptos::ev::SubmitEvent| {
-        e.prevent_default();
+    let send = move || {
         busy.set(true);
         leptos::task::spawn_local(async move {
             let _ = api::post::<serde_json::Value>("/auth/reset", &serde_json::json!({"email": email.get_untracked()})).await;
@@ -134,22 +124,23 @@ pub fn Reset() -> impl IntoView {
             sent.set(true);
         });
     };
+    let only_sign_in = view! { <ButtonLink href="/signin" variant=ButtonVariant::Secondary size=Size::Sm>"sign in"</ButtonLink> }.into_any();
     view! {
-        <AuthPage title="reset password" sub="we do not send email yet." other=other("remembered it?", "/signin", "sign in")>
-            {move || if sent.get() {
-                view! {
-                    <p>"if that address has an account, an administrator can reset it with:"</p>
-                    <code class="d-code">"tracer user passwd <email>"</code>
-                    <A href="/signin" attr:class="d-link">"back to sign in"</A>
-                }.into_any()
-            } else {
-                view! {
-                    <form on:submit=submit style="display:flex;flex-direction:column;gap:16px">
-                        <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email"/>
-                        <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"request reset"</Button>
-                    </form>
-                }.into_any()
-            }}
+        <AuthPage title="reset password" sub="enter the email you sign in with. a reset link goes there." other=only_sign_in>
+            <form on:submit=move |e| { e.prevent_default(); send() } style="display:flex;flex-direction:column;gap:16px">
+                <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email"/>
+                {move || if sent.get() {
+                    view! {
+                        <div role="status" style="display:flex;flex-direction:column;gap:12px">
+                            <StatusChip on=true severity=Severity::Success>"sent. check your inbox."</StatusChip>
+                            <Button size=Size::Lg submit=true busy=busy attr:style="width:100%">"send again"</Button>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"send reset link"</Button> }.into_any()
+                }}
+                <A href="/signin" attr:class="d-link" attr:style="align-self:flex-start">"back to sign in"</A>
+            </form>
         </AuthPage>
     }
 }

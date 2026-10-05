@@ -27,6 +27,7 @@ ui/build.sh                                  # builds ui/dist; PROFILE=debug for
 ```
 
 `TRACER_DB`, `TRACER_LISTEN`, `TRACER_UI_DIR` set the database, address and web app folder.
+`scripts/demo.sh sqlite://demo.db` fills a database with a sample household to look around in.
 There is no email service, so a forgotten password is reset on the server: `tracer user passwd <email>`.
 
 ## cli
@@ -51,9 +52,9 @@ tracer token create claude --scopes read,transactions,add
 
 `/api/*`, JSON, `Authorization: Bearer <token>`. Amounts are decimal strings (`"3240.50"`) in major units. Sign in
 at `POST /api/auth/signin` for a session token, or create a connector token (profile, connectors).
-Routes: `auth/{signup,signin,signout,reset}`, `me`, `me/password`, `family`, `family/join`, `accounts`,
-`transactions` (filter, sort, page), `transfers`, `transactions/{id}/attachments`, `tags`, `insights`, `ask`,
-`notifications`, `connectors`.
+Routes: `auth/{signup,signin,signout,signout-all,reset}`, `me` (also delete), `me/password`, `export.csv`,
+`family` (create, delete), `family/{invite,join,leave}`, `accounts`, `transactions` (filter, sort, page, in/out
+totals), `transfers`, `transactions/{id}/attachments`, `tags`, `insights`, `ask`, `notifications`, `connectors`.
 
 ## mcp
 

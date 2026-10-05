@@ -1,13 +1,15 @@
 mod accounts;
 mod auth;
 mod insights;
-mod profile;
+mod landing;
+mod settings;
 mod shell;
 mod transactions;
 
-pub use accounts::Accounts;
-pub use auth::{Home, Reset, SignIn, SignUp};
+pub use accounts::{AccountPage, Accounts, NewAccount};
+pub use auth::{Reset, SignIn, SignUp};
 pub use insights::Insights;
-pub use profile::Profile;
+pub use landing::Landing;
+pub use settings::Settings;
 pub use shell::AppShell;
 pub use transactions::Transactions;
