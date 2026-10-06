@@ -1,15 +1,15 @@
 [package]
-name = "tracer"
-description = "tracer/fin: a household money tracker. One binary: REST server, MCP server (HTTP and stdio) and a CLI."
+name = "pebblelab"
+description = "pebblelab/fin: a household money tracker. One binary: REST server, MCP server (HTTP and stdio) and a CLI."
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "tracer"
+name = "pebblelab"
 path = "src/main.rs"
 
 [dependencies]
-tracer-core = { path = "../core" }
+pebblelab-core = { path = "../core" }
 serde.workspace = true
 serde_json.workspace = true
 axum = "0.8"

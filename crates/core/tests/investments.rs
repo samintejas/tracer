@@ -1,7 +1,7 @@
 //! Investment types, the details each asks for, and investments that are also assets.
 
-use tracer_core::api::*;
-use tracer_core::{Caller, Store};
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Store};
 
 fn invest(name: &str, kind: &str, details: AccountDetails) -> NewAccount {
     NewAccount {

@@ -1241,6 +1241,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "pebblelab"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "http-body-util",
+ "libc",
+ "pebblelab-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.0",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "pebblelab-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pebblelab-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "chrono",
+ "chrono-tz",
+ "hex",
+ "pebblelab-api",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2123,56 +2173,6 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
-
-[[package]]
-name = "tracer"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "chrono",
- "chrono-tz",
- "clap",
- "http-body-util",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2 0.11.0",
- "tokio",
- "tower",
- "tower-http 0.7.1",
- "tracer-core",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tracer-api"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "tracer-core"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "chrono",
- "chrono-tz",
- "hex",
- "rand",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tokio",
- "tracer-api",
- "tracing",
-]
 
 [[package]]
 name = "tracing"

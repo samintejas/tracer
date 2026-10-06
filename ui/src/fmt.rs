@@ -1,6 +1,6 @@
 //! How numbers and dates are written. The stored amounts never change; only the display does.
 
-use tracer_api::money::group_digits;
+use pebblelab_api::money::group_digits;
 
 pub fn symbol(cur: &str) -> &'static str {
     match cur {
@@ -37,7 +37,7 @@ pub fn month(ym: &str) -> String {
 
 /// A plain number in major units for an input, without grouping: `3240` or `3240.5`.
 pub fn plain(minor: i64) -> String {
-    let s = tracer_api::money::format_minor(minor.abs());
+    let s = pebblelab_api::money::format_minor(minor.abs());
     s.strip_suffix(".00").map(String::from).unwrap_or(s)
 }
 

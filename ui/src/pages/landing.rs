@@ -44,7 +44,7 @@ pub fn Landing() -> impl IntoView {
             <SkipLink/>
             <header class="d-appbar">
                 <span style="margin-left:4px;display:flex"><Mark/></span>
-                <span class="d-appbar__title">"tracer/fin"</span>
+                <span class="d-appbar__title">"pebblelab/fin"</span>
                 <span class="d-appbar__sep" aria-hidden="true"></span>
                 <nav class="d-appbar__nav" aria-label="main">
                     <a class="d-appbar__link" href="#views" rel="external">"views"</a>
@@ -176,7 +176,8 @@ pub fn Landing() -> impl IntoView {
             </main>
             <footer style="border-top:1px solid var(--border-default)">
                 <div class="d-container d-row" style="padding-block:16px;justify-content:space-between;font-size:var(--font-size-sm);color:var(--text-secondary)">
-                    <span>"tracer/fin"</span>
+                    <span>"pebblelab/fin"</span>
+                    <span>"a pebblelab.in app"</span>
                 </div>
             </footer>
         </div>

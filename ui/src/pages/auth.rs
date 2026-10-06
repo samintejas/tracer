@@ -2,7 +2,7 @@ use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use tracer_api::*;
+use pebblelab_api::*;
 
 use crate::api;
 
@@ -12,7 +12,7 @@ fn AuthPage(title: &'static str, sub: &'static str, other: AnyView, #[prop(defau
         <SkipLink/>
         <div style="min-height:100dvh;display:flex;flex-direction:column;background:var(--bg-base)">
             <AppBar>
-                <A href="/" attr:class="d-appbar__title" attr:style="text-decoration:none">"tracer/fin"</A>
+                <A href="/" attr:class="d-appbar__title" attr:style="text-decoration:none">"pebblelab/fin"</A>
                 <AppBarSpacer/>
                 {other}
             </AppBar>
@@ -41,14 +41,16 @@ fn other(prompt: &'static str, href: &'static str, label: &'static str) -> AnyVi
 
 /// "or continue with google / github", for the providers this server has set up. Nothing shows when none are.
 #[component]
-fn Providers(verb: &'static str) -> impl IntoView {
+fn Providers(verb: &'static str, #[prop(optional)] alone: bool) -> impl IntoView {
     let list = LocalResource::new(api::providers);
     view! {
         {move || list.get().filter(|l| !l.is_empty()).map(|l| view! {
             <div style="display:flex;flex-direction:column;gap:8px">
-                <div class="d-row" style="gap:12px;color:var(--text-secondary)" aria-hidden="true">
-                    <span style="flex:1;border-top:1px solid var(--border-default)"></span>"or"<span style="flex:1;border-top:1px solid var(--border-default)"></span>
-                </div>
+                {(!alone).then(|| view! {
+                    <div class="d-row" style="gap:12px;color:var(--text-secondary)" aria-hidden="true">
+                        <span style="flex:1;border-top:1px solid var(--border-default)"></span>"or"<span style="flex:1;border-top:1px solid var(--border-default)"></span>
+                    </div>
+                })}
                 {l.into_iter().map(|p| view! {
                     // a full page load: the provider is another site, so the router must leave it alone
                     <a class="d-btn d-btn--secondary d-btn--lg" rel="external" href=format!("/api/auth/{p}/start") style="width:100%;justify-content:center">
@@ -94,8 +96,9 @@ pub fn SignIn() -> impl IntoView {
     let (email, pass, keep) = (RwSignal::new(String::new()), RwSignal::new(String::new()), RwSignal::new(true));
     // a provider sign-in that failed lands here with the reason after the `#`
     let (busy, err) = (RwSignal::new(false), RwSignal::new(api::hash_params().remove("error")));
+    let pw = LocalResource::new(api::password_login);
     let nav = use_navigate();
-    let submit = move |e: leptos::ev::SubmitEvent| {
+    let submit = Callback::new(move |e: leptos::ev::SubmitEvent| {
         e.prevent_default();
         busy.set(true);
         err.set(None);
@@ -112,19 +115,28 @@ pub fn SignIn() -> impl IntoView {
                 }
             }
         });
-    };
+    });
     view! {
         <AuthPage title="sign in" sub="to your account." other=other("new here?", "/signup", "create an account")>
-            <form on:submit=submit style="display:flex;flex-direction:column;gap:16px">
-                <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email" error=err/>
-                <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="current-password"/>
-                <div class="d-row" style="justify-content:space-between">
-                    <Checkbox checked=keep>"keep me signed in"</Checkbox>
-                    <A href="/reset" attr:class="d-link">"forgot password"</A>
-                </div>
-                <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"sign in"</Button>
-            </form>
-            <Providers verb="sign in"/>
+            {move || pw.get().map(|on| if on {
+                view! {
+                    <form on:submit=move |e| submit.run(e) style="display:flex;flex-direction:column;gap:16px">
+                        <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email" error=err/>
+                        <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="current-password"/>
+                        <div class="d-row" style="justify-content:space-between">
+                            <Checkbox checked=keep>"keep me signed in"</Checkbox>
+                            <A href="/reset" attr:class="d-link">"forgot password"</A>
+                        </div>
+                        <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"sign in"</Button>
+                    </form>
+                    <Providers verb="sign in"/>
+                }.into_any()
+            } else {
+                view! {
+                    {move || err.get().map(|m| view! { <span class="d-error" role="alert">{format!("error: {m}")}</span> })}
+                    <Providers verb="sign in" alone=true/>
+                }.into_any()
+            })}
         </AuthPage>
     }
 }
@@ -133,8 +145,9 @@ pub fn SignIn() -> impl IntoView {
 pub fn SignUp() -> impl IntoView {
     let (name, email, pass) = (RwSignal::new(String::new()), RwSignal::new(String::new()), RwSignal::new(String::new()));
     let (busy, err) = (RwSignal::new(false), RwSignal::new(None::<String>));
+    let pw = LocalResource::new(api::password_login);
     let nav = use_navigate();
-    let submit = move |e: leptos::ev::SubmitEvent| {
+    let submit = Callback::new(move |e: leptos::ev::SubmitEvent| {
         e.prevent_default();
         busy.set(true);
         err.set(None);
@@ -151,29 +164,81 @@ pub fn SignUp() -> impl IntoView {
                 }
             }
         });
-    };
+    });
     view! {
         <AuthPage title="create an account" sub="for you alone. a family is optional and can be added later in settings." width=420 other=other("have an account?", "/signin", "sign in")>
-            <form on:submit=submit style="display:flex;flex-direction:column;gap:16px">
-                <TextField label="name" value=name size=Size::Lg autocomplete="name"/>
-                <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email"/>
-                <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="new-password" hint="12 characters or more" error=err/>
-                <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"create account"</Button>
-            </form>
-            <Providers verb="sign up"/>
+            {move || pw.get().map(|on| if on {
+                view! {
+                    <form on:submit=move |e| submit.run(e) style="display:flex;flex-direction:column;gap:16px">
+                        <TextField label="name" value=name size=Size::Lg autocomplete="name"/>
+                        <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email"/>
+                        <TextField label="password" value=pass input_type="password" size=Size::Lg autocomplete="new-password" hint="12 characters or more" error=err/>
+                        <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">"create account"</Button>
+                    </form>
+                    <Providers verb="sign up"/>
+                }.into_any()
+            } else {
+                view! { <Providers verb="sign up" alone=true/> }.into_any()
+            })}
         </AuthPage>
     }
 }
 
 #[component]
 pub fn Reset() -> impl IntoView {
+    let token = api::hash_params().remove("token");
     let only_sign_in = view! { <ButtonLink href="/signin" variant=ButtonVariant::Secondary size=Size::Sm>"sign in"</ButtonLink> }.into_any();
+    let (email, pass) = (RwSignal::new(String::new()), RwSignal::new(String::new()));
+    let (busy, err, done) = (RwSignal::new(false), RwSignal::new(None::<String>), RwSignal::new(false));
+    let has_token = token.is_some();
+    let pw = LocalResource::new(api::password_login);
+    let submit = Callback::new(move |e: leptos::ev::SubmitEvent| {
+        e.prevent_default();
+        busy.set(true);
+        err.set(None);
+        let token = token.clone();
+        leptos::task::spawn_local(async move {
+            let res = match token {
+                Some(t) => api::post::<serde_json::Value>("/auth/reset/confirm", &serde_json::json!({ "token": t, "password": pass.get_untracked() })).await,
+                None => api::post::<serde_json::Value>("/auth/reset", &serde_json::json!({ "email": email.get_untracked() })).await,
+            };
+            match res {
+                Ok(_) => done.set(true),
+                Err(e) => err.set(Some(e.message)),
+            }
+            busy.set(false);
+        });
+    });
+    let sub = if has_token { "choose a new password. you will be signed out everywhere else." } else { "we will email you a link to choose a new one." };
     view! {
-        <AuthPage title="reset password" sub="this server cannot send email yet, so a password is reset by whoever runs it." other=only_sign_in>
-            <div role="status" style="display:flex;flex-direction:column;gap:16px">
-                <p style="margin:0;max-width:64ch">"ask the person who runs this server to reset it for you. they run " <code>"tracer user passwd your@email"</code> " and give you a new one. you can change it again under profile."</p>
-                <A href="/signin" attr:class="d-link" attr:style="align-self:flex-start">"back to sign in"</A>
-            </div>
+        <AuthPage title="reset password" sub=sub other=only_sign_in>
+            {move || (pw.get() == Some(false)).then(|| view! {
+                <div role="status" style="display:flex;flex-direction:column;gap:16px">
+                    <p style="margin:0;max-width:64ch">"there is no password here: sign in with google or github."</p>
+                    <A href="/signin" attr:class="d-link" attr:style="align-self:flex-start">"back to sign in"</A>
+                </div>
+            })}
+            {move || if pw.get() != Some(true) {
+                ().into_any()
+            } else if done.get() {
+                view! {
+                    <div role="status" style="display:flex;flex-direction:column;gap:16px">
+                        <p style="margin:0;max-width:64ch">{if has_token { "your password is changed. sign in with the new one." } else { "if that address has an account, a link is on its way. it works once, for an hour." }}</p>
+                        <A href="/signin" attr:class="d-link" attr:style="align-self:flex-start">"back to sign in"</A>
+                    </div>
+                }.into_any()
+            } else {
+                view! {
+                    <form on:submit=move |e| submit.run(e) style="display:flex;flex-direction:column;gap:16px">
+                        {if has_token {
+                            view! { <TextField label="new password" value=pass input_type="password" size=Size::Lg autocomplete="new-password" hint="12 characters or more" error=err/> }.into_any()
+                        } else {
+                            view! { <TextField label="email" value=email input_type="email" size=Size::Lg autocomplete="email" error=err/> }.into_any()
+                        }}
+                        <Button variant=ButtonVariant::Primary size=Size::Lg submit=true busy=busy attr:style="width:100%">{if has_token { "set password" } else { "send link" }}</Button>
+                    </form>
+                }.into_any()
+            }}
         </AuthPage>
     }
 }

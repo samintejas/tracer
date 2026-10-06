@@ -64,7 +64,7 @@ pub(crate) const UNUSABLE_PASSWORD: &str = "!";
 /// Passwords are at least this long.
 pub const MIN_PASSWORD: usize = 12;
 
-fn check_password(pw: &str) -> Result<()> {
+pub(crate) fn check_password(pw: &str) -> Result<()> {
     if pw.chars().count() < MIN_PASSWORD {
         return Err(Error::bad(format!("password needs {MIN_PASSWORD} characters or more")));
     }

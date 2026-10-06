@@ -18,8 +18,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use tracer_core::api::*;
-use tracer_core::{Caller, Error, Store};
+use crate::mail::Mailer;
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Error, Store};
 
 use crate::limit::Limits;
 use crate::mcp;
@@ -92,14 +93,16 @@ const APP_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval';
 /// How long a request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oauth>) -> Router {
+pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oauth>, mailer: Arc<Mailer>, public_url: String) -> Router {
     let api = Router::new()
         .route("/auth/signup", post(sign_up))
         .route("/auth/signin", post(sign_in))
         .route("/auth/signout", post(sign_out))
         .route("/auth/signout-all", post(sign_out_all))
         .route("/auth/reset", post(reset))
+        .route("/auth/reset/confirm", post(reset_confirm))
         .route("/auth/providers", get(providers))
+        .route("/auth/options", get(options))
         .route("/auth/redeem", post(redeem))
         .route("/auth/{provider}/start", get(oauth_start))
         .route("/auth/{provider}/callback", get(oauth_callback))
@@ -149,6 +152,8 @@ pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oau
         .layer(TraceLayer::new_for_http())
         .layer(Extension(limits))
         .layer(Extension(oauth))
+        .layer(Extension(mailer))
+        .layer(Extension(ResetBase(public_url.trim_end_matches('/').to_string())))
 }
 
 /// Is the database reachable? Whatever watches the server (a proxy, an orchestrator) should ask this.
@@ -173,12 +178,14 @@ async fn mcp_http(State(s): State<Store>, Auth(c, _): Auth, Json(req): Json<Valu
     }
 }
 
-async fn sign_up(State(s): State<Store>, Extension(l): Extension<Arc<Limits>>, ClientIp(ip): ClientIp, Json(b): Json<SignUp>) -> R<Session> {
+async fn sign_up(State(s): State<Store>, Extension(o): Extension<Arc<Oauth>>, Extension(l): Extension<Arc<Limits>>, ClientIp(ip): ClientIp, Json(b): Json<SignUp>) -> R<Session> {
+    need_password(&o)?;
     l.sign_up.hit(&ip)?;
     Ok(Json(s.sign_up(b).await?))
 }
 
-async fn sign_in(State(s): State<Store>, Extension(l): Extension<Arc<Limits>>, ClientIp(ip): ClientIp, Json(b): Json<SignIn>) -> R<Session> {
+async fn sign_in(State(s): State<Store>, Extension(o): Extension<Arc<Oauth>>, Extension(l): Extension<Arc<Limits>>, ClientIp(ip): ClientIp, Json(b): Json<SignIn>) -> R<Session> {
+    need_password(&o)?;
     l.sign_in_ip.hit(&ip)?;
     l.sign_in.hit(&format!("{ip}|{}", b.email.trim().to_lowercase()))?;
     Ok(Json(s.sign_in(b).await?))
@@ -190,12 +197,22 @@ async fn sign_out(State(s): State<Store>, Auth(_, token): Auth) -> R<Value> {
 }
 
 /// The providers people can sign in with here, so the app knows which buttons to show.
+/// What the sign-in screens should offer besides the providers.
+async fn options(Extension(o): Extension<Arc<Oauth>>) -> Json<Value> {
+    Json(json!({ "password": o.password() }))
+}
+
+/// Refuse the email-and-password routes when the server only signs people in through a provider.
+fn need_password(o: &Oauth) -> Result<(), ApiError> {
+    if o.password() { Ok(()) } else { Err(Error::Forbidden("signing in with a password is turned off here: use google or github".into()).into()) }
+}
+
 async fn providers(Extension(o): Extension<Arc<Oauth>>) -> Json<Vec<&'static str>> {
     Json(o.enabled())
 }
 
 /// The cookie that ties a provider sign-in to the browser that started it.
-const FLOW_COOKIE: &str = "tracer_oauth";
+const FLOW_COOKIE: &str = "pebblelab_oauth";
 
 fn flow_cookie(o: &Oauth, value: &str, max_age: u32) -> String {
     format!("{FLOW_COOKIE}={value}; HttpOnly; SameSite=Lax; Path=/api/auth; Max-Age={max_age}{}", if o.secure() { "; Secure" } else { "" })
@@ -282,14 +299,57 @@ async fn redeem(State(s): State<Store>, Extension(l): Extension<Arc<Limits>>, Cl
 
 #[derive(Deserialize)]
 struct Reset {
-    #[allow(dead_code)]
     email: String,
 }
 
-/// There is no email service behind this yet, so it never reveals whether the address exists and sends
-/// nothing. A reset is `tracer user passwd <email>` on the server.
-async fn reset(Json(_): Json<Reset>) -> (StatusCode, Json<Value>) {
-    (StatusCode::ACCEPTED, Json(json!({ "ok": true })))
+/// Where the reset link points: the public address of this server.
+#[derive(Clone)]
+struct ResetBase(String);
+
+/// Email a reset link. The answer is the same whether or not the address has an account, and the email goes
+/// out after it, so neither the reply nor its timing says which.
+async fn reset(
+    State(s): State<Store>,
+    Extension(o): Extension<Arc<Oauth>>,
+    Extension(l): Extension<Arc<Limits>>,
+    Extension(m): Extension<Arc<Mailer>>,
+    Extension(ResetBase(base)): Extension<ResetBase>,
+    ClientIp(ip): ClientIp,
+    Json(b): Json<Reset>,
+) -> R<Value> {
+    need_password(&o)?;
+    l.reset.hit(&ip)?;
+    l.reset.hit(&format!("email:{}", b.email.trim().to_lowercase()))?;
+    if !m.enabled() {
+        tracing::warn!("password reset asked for but email is off: set PEBBLELAB_RESEND_API_KEY, or use `pebblelab user passwd`");
+    } else {
+        tokio::spawn(async move {
+            match s.start_reset(&b.email).await {
+                Ok(Some(t)) => {
+                    // in the fragment, so it is never sent to a server, a log or a referer
+                    if let Err(e) = m.password_reset(&t.email, &t.name, &format!("{base}/reset#token={}", t.token)).await {
+                        tracing::error!("reset email failed: {e}");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::error!("reset: {e}"),
+            }
+        });
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct ResetConfirm {
+    token: String,
+    password: String,
+}
+
+async fn reset_confirm(State(s): State<Store>, Extension(o): Extension<Arc<Oauth>>, Extension(l): Extension<Arc<Limits>>, ClientIp(ip): ClientIp, Json(b): Json<ResetConfirm>) -> R<Value> {
+    need_password(&o)?;
+    l.sign_in_ip.hit(&ip)?;
+    s.finish_reset(&b.token, &b.password).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn me(State(s): State<Store>, Auth(c, _): Auth) -> R<Me> {
@@ -340,7 +400,7 @@ async fn delete_me(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<Passw
 
 async fn export_csv(State(s): State<Store>, Auth(c, _): Auth) -> Result<Response, ApiError> {
     let csv = s.export_csv(&c).await?;
-    Ok(([(CONTENT_TYPE, "text/csv; charset=utf-8"), (CONTENT_DISPOSITION, "attachment; filename=\"tracer-fin.csv\"")], csv).into_response())
+    Ok(([(CONTENT_TYPE, "text/csv; charset=utf-8"), (CONTENT_DISPOSITION, "attachment; filename=\"pebblelab-fin.csv\"")], csv).into_response())
 }
 
 async fn leave_account(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>) -> R<Value> {
@@ -423,7 +483,7 @@ async fn attachment(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64
     let (name, mime, data) = s.attachment(&c, id).await?;
     let safe: String = name.chars().filter(|ch| ch.is_ascii_graphic() && *ch != '"' && *ch != '\\').collect();
     // only pictures and pdfs are ever shown in place; anything else is a download, and none of it can run
-    let how = if tracer_core::INLINE_TYPES.contains(&mime.as_str()) { "inline" } else { "attachment" };
+    let how = if pebblelab_core::INLINE_TYPES.contains(&mime.as_str()) { "inline" } else { "attachment" };
     Ok((
         [
             (CONTENT_TYPE, mime),
@@ -527,7 +587,7 @@ mod tests {
     async fn app() -> (Router, Store) {
         let store = Store::test().await.unwrap();
         let dir = std::env::temp_dir();
-        (router(store.clone(), dir, Arc::new(Limits::new(true)), Arc::new(Oauth::none())), store)
+        (router(store.clone(), dir, Arc::new(Limits::new(true)), Arc::new(Oauth::none()), Arc::new(Mailer::off()), String::new()), store)
     }
 
     async fn call(app: &Router, method: &str, uri: &str, token: Option<&str>, body: Option<Value>, ip: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
@@ -553,6 +613,45 @@ mod tests {
         let (s, v) = json(app, "POST", "/api/auth/signup", None, Some(json!({"name": name, "email": format!("{name}@x.example"), "password": "correct horse battery"}))).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         v["token"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn reset_answers_the_same_for_any_address_and_the_token_works_once() {
+        let (app, store) = app().await;
+        let old = sign_up(&app, "ria").await;
+        for email in ["ria@x.example", "nobody@x.example"] {
+            let (s, v) = json(&app, "POST", "/api/auth/reset", None, Some(json!({ "email": email }))).await;
+            assert_eq!((s, v), (StatusCode::OK, json!({ "ok": true })));
+        }
+        let t = store.start_reset("RIA@x.example").await.unwrap().expect("account").token;
+        assert!(store.start_reset("nobody@x.example").await.unwrap().is_none());
+        let (s, _) = json(&app, "POST", "/api/auth/reset/confirm", None, Some(json!({ "token": t, "password": "short" }))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "a weak password must not spend the link");
+        let (s, _) = json(&app, "POST", "/api/auth/reset/confirm", None, Some(json!({ "token": t, "password": "a brand new passphrase" }))).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = json(&app, "POST", "/api/auth/reset/confirm", None, Some(json!({ "token": t, "password": "another new passphrase" }))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "the link works once");
+        let (s, _) = json(&app, "GET", "/api/me", Some(&old), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "old sessions are signed out");
+        let (s, _) = json(&app, "POST", "/api/auth/signin", None, Some(json!({ "email": "ria@x.example", "password": "a brand new passphrase" }))).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn with_password_login_off_only_providers_get_people_in() {
+        let store = Store::test().await.unwrap();
+        let app = router(store, std::env::temp_dir(), Arc::new(Limits::new(true)), Arc::new(Oauth::none().with_password(false)), Arc::new(Mailer::off()), String::new());
+        let (s, v) = json(&app, "GET", "/api/auth/options", None, None).await;
+        assert_eq!((s, v), (StatusCode::OK, json!({ "password": false })));
+        for (path, body) in [
+            ("/api/auth/signup", json!({"name": "a", "email": "a@x.example", "password": "correct horse battery"})),
+            ("/api/auth/signin", json!({"email": "a@x.example", "password": "correct horse battery"})),
+            ("/api/auth/reset", json!({"email": "a@x.example"})),
+            ("/api/auth/reset/confirm", json!({"token": "x", "password": "correct horse battery"})),
+        ] {
+            let (s, _) = json(&app, "POST", path, None, Some(body)).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
+        }
     }
 
     #[tokio::test]
@@ -627,7 +726,7 @@ mod tests {
     #[tokio::test]
     async fn closed_sign_ups_are_refused_over_rest() {
         let (_, store) = app().await;
-        let app = router(store.with_config(tracer_core::Config { signups_open: false, ..Default::default() }), std::env::temp_dir(), Arc::new(Limits::new(false)), Arc::new(Oauth::none()));
+        let app = router(store.with_config(pebblelab_core::Config { signups_open: false, ..Default::default() }), std::env::temp_dir(), Arc::new(Limits::new(false)), Arc::new(Oauth::none()), Arc::new(Mailer::off()), String::new());
         let (s, _) = json(&app, "POST", "/api/auth/signup", None, Some(json!({"name": "x", "email": "x@y.example", "password": "correct horse battery"}))).await;
         assert_eq!(s, StatusCode::FORBIDDEN);
     }
@@ -726,7 +825,7 @@ mod tests {
         let mut providers = HashMap::new();
         providers.insert("google", aimed_at(Provider::google("gid".into(), "secret".into()), base));
         providers.insert("github", aimed_at(Provider::github("hid".into(), "secret".into()), base));
-        router(store, std::env::temp_dir(), Arc::new(Limits::new(true)), Arc::new(Oauth::new("http://tracer.test", providers)))
+        router(store, std::env::temp_dir(), Arc::new(Limits::new(true)), Arc::new(Oauth::new("http://pebblelab.test", providers)), Arc::new(Mailer::off()), String::new())
     }
 
     /// Start a sign-in the way a browser would, and return its state and cookie.
@@ -735,10 +834,10 @@ mod tests {
         assert_eq!(s, StatusCode::SEE_OTHER);
         let to = header_of(&h, "location");
         let query: HashMap<String, String> = serde_urlencoded::from_str(to.split_once('?').unwrap().1).unwrap();
-        assert_eq!(query["redirect_uri"], format!("http://tracer.test/api/auth/{provider}/callback"));
+        assert_eq!(query["redirect_uri"], format!("http://pebblelab.test/api/auth/{provider}/callback"));
         assert_eq!(query["code_challenge_method"], "S256");
         let cookie = header_of(&h, "set-cookie");
-        assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax") && cookie.contains(&format!("tracer_oauth={}", query["state"])), "{cookie}");
+        assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax") && cookie.contains(&format!("pebblelab_oauth={}", query["state"])), "{cookie}");
         let _ = stand;
         (query["state"].clone(), query["code_challenge"].clone())
     }
@@ -765,7 +864,7 @@ mod tests {
         assert_eq!(providers, json!(["github", "google"]));
 
         let (state, challenge) = begin(&app, "google", &stand).await;
-        let cookie = format!("other=1; tracer_oauth={state}");
+        let cookie = format!("other=1; pebblelab_oauth={state}");
         let to = come_back(&app, "google", &format!("code=good&state={state}"), Some(&cookie)).await;
         let code = to.strip_prefix("/auth/callback#code=").unwrap_or_else(|| panic!("{to}"));
         // the provider was shown the proof for the challenge the browser was sent
@@ -793,9 +892,9 @@ mod tests {
         let app = with_providers(store, &base).await;
 
         let (state, _) = begin(&app, "google", &stand).await;
-        let mine = format!("tracer_oauth={state}");
+        let mine = format!("pebblelab_oauth={state}");
         // no cookie, or someone else's: the sign-in did not start in this browser
-        for cookie in [None, Some("tracer_oauth=forged")] {
+        for cookie in [None, Some("pebblelab_oauth=forged")] {
             let to = come_back(&app, "google", &format!("code=good&state={state}"), cookie).await;
             assert!(to.starts_with("/signin#error=") && to.contains("this+sign-in+did+not+start"), "{to}");
         }
@@ -804,10 +903,10 @@ mod tests {
         assert!(to.contains("cancelled"), "{to}");
         // a bad code, then an unverified email
         let (state, _) = begin(&app, "google", &stand).await;
-        let mine = format!("tracer_oauth={state}");
+        let mine = format!("pebblelab_oauth={state}");
         assert!(come_back(&app, "google", &format!("code=forged&state={state}"), Some(&mine)).await.starts_with("/signin#error="));
         let (state, _) = begin(&app, "google", &stand).await;
-        let to = come_back(&app, "google", &format!("code=good&state={state}"), Some(&format!("tracer_oauth={state}"))).await;
+        let to = come_back(&app, "google", &format!("code=good&state={state}"), Some(&format!("pebblelab_oauth={state}"))).await;
         assert!(to.contains("verified"), "{to}");
         // a provider that is not set up
         assert_eq!(json(&app, "GET", "/api/auth/myspace/start", None, None).await.0, StatusCode::NOT_FOUND);
@@ -833,7 +932,7 @@ mod tests {
         let (_, store) = app().await;
         let app = with_providers(store, &base).await;
         let (state, _) = begin(&app, "github", &stand).await;
-        let to = come_back(&app, "github", &format!("code=good&state={state}"), Some(&format!("tracer_oauth={state}"))).await;
+        let to = come_back(&app, "github", &format!("code=good&state={state}"), Some(&format!("pebblelab_oauth={state}"))).await;
         let code = to.strip_prefix("/auth/callback#code=").unwrap_or_else(|| panic!("{to}"));
         let (_, session) = json(&app, "POST", "/api/auth/redeem", None, Some(json!({"code": code}))).await;
         assert_eq!(session["user"]["email"], "anita@x.example");
@@ -843,7 +942,7 @@ mod tests {
         *stand.emails.lock().unwrap() = json!([{"email": "anita2@x.example", "primary": true, "verified": false}]);
         *stand.profile.lock().unwrap() = json!({"id": 777, "login": "someone"});
         let (state, _) = begin(&app, "github", &stand).await;
-        let to = come_back(&app, "github", &format!("code=good&state={state}"), Some(&format!("tracer_oauth={state}"))).await;
+        let to = come_back(&app, "github", &format!("code=good&state={state}"), Some(&format!("pebblelab_oauth={state}"))).await;
         assert!(to.starts_with("/signin#error=") && to.contains("verified"), "{to}");
     }
 }

@@ -1,7 +1,7 @@
 //! One test per rule that was once broken, so it stays fixed.
 
-use tracer_core::api::*;
-use tracer_core::{Caller, Config, Error, ExternalIdentity, Store};
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Config, Error, ExternalIdentity, Store};
 
 fn acct(name: &str, kind: AccountKind, balance: i64) -> NewAccount {
     NewAccount { name: name.into(), kind, asset_id: None, balance: Some(balance), visibility: Visibility::Private, owner_ids: vec![], details: AccountDetails::default() }
@@ -205,7 +205,7 @@ async fn today_follows_the_configured_zone() {
 // ---- signing in with a provider ---------------------------------------------------------------------
 
 fn google(subject: &str, email: &str, verified: bool) -> ExternalIdentity {
-    ExternalIdentity { provider: "google".into(), subject: subject.into(), email: email.into(), email_verified: verified, name: "Anita Rao".into() }
+    ExternalIdentity { provider: "google".into(), subject: subject.into(), email: email.into(), email_verified: verified, name: "Anita Rao".into(), picture: None }
 }
 
 #[tokio::test]
@@ -222,6 +222,22 @@ async fn a_provider_sign_in_makes_an_account_once_and_finds_it_again() {
     // an account that only ever used a provider has no password to guess
     assert!(matches!(s.sign_in(SignIn { email: "anita@x.example".into(), password: "!".into() }).await, Err(Error::Unauthorized)));
     assert!(matches!(s.sign_in(SignIn { email: "anita@x.example".into(), password: String::new() }).await, Err(Error::Unauthorized)));
+}
+
+#[tokio::test]
+async fn a_provider_picture_fills_a_gap_but_never_replaces_the_persons_own() {
+    let s = Store::test().await.unwrap();
+    let with = |pic: &str| ExternalIdentity { picture: Some(pic.into()), ..google("g-1", "a@x.example", true) };
+    let me = s.redeem_login_code(&s.external_sign_in(with("data:image/png;base64,AAAA")).await.unwrap()).await.unwrap().user;
+    assert_eq!(me.picture.as_deref(), Some("data:image/png;base64,AAAA"));
+    let c = Caller::full(me.id);
+    s.update_profile(&c, UpdateProfile { picture: Some("data:image/png;base64,MINE".into()), ..Default::default() }).await.unwrap();
+    s.redeem_login_code(&s.external_sign_in(with("data:image/png;base64,BBBB")).await.unwrap()).await.unwrap();
+    assert_eq!(s.user(me.id).await.unwrap().picture.as_deref(), Some("data:image/png;base64,MINE"));
+    // anything that is not an inline image is ignored
+    let t = Store::test().await.unwrap();
+    let bad = ExternalIdentity { picture: Some("https://evil.example/x.png".into()), ..google("g-2", "b@x.example", true) };
+    assert_eq!(t.redeem_login_code(&t.external_sign_in(bad).await.unwrap()).await.unwrap().user.picture, None);
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tracer_core::Error;
+use pebblelab_core::Error;
 
 pub struct Limiter {
     max: u32,
@@ -46,6 +46,8 @@ pub struct Limits {
     /// Sign-in attempts from one place, whatever the address.
     pub sign_in_ip: Limiter,
     pub sign_up: Limiter,
+    /// Password reset emails, by place and by address, so nobody can use us to flood an inbox.
+    pub reset: Limiter,
     /// Tries at an invite code by one person.
     pub join: Limiter,
     pub trust_proxy: bool,
@@ -58,6 +60,7 @@ impl Limits {
             sign_in: Limiter::new(8, quarter),
             sign_in_ip: Limiter::new(60, quarter),
             sign_up: Limiter::new(10, Duration::from_secs(3600)),
+            reset: Limiter::new(5, Duration::from_secs(3600)),
             join: Limiter::new(10, Duration::from_secs(3600)),
             trust_proxy,
         }

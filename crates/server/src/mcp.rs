@@ -1,17 +1,17 @@
 //! MCP (Model Context Protocol) over the same store the REST API and CLI use. One implementation, two
-//! transports: streamable HTTP at `POST /mcp` and newline-delimited JSON-RPC on stdio (`tracer mcp`).
+//! transports: streamable HTTP at `POST /mcp` and newline-delimited JSON-RPC on stdio (`pebblelab mcp`).
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracer_core::api::*;
-use tracer_core::{Caller, Error, Store};
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Error, Store};
 
 const NOTE: &str = "Amounts are decimal numbers or strings in major units (e.g. 3240 or \"3240.50\"). Dates are YYYY-MM-DD and default to today. Tags are lowercase words; the first tag is the category.";
 
 /// The scope a tool needs.
 fn scope_of(tool: &str) -> &'static str {
     match tool {
-        "list_accounts" | "list_subscriptions" | "list_assets" | "get_insights" | "ask_tracer" => "read",
+        "list_accounts" | "list_subscriptions" | "list_assets" | "get_insights" | "ask_pebblelab" => "read",
         "list_transactions" | "list_tags" => "transactions",
         "add_transaction" | "transfer_money" | "add_subscription" | "add_asset" => "add",
         _ => "edit",
@@ -90,7 +90,7 @@ fn tools() -> Value {
        "inputSchema": {"type": "object", "properties": {}}},
       {"name": "get_insights", "description": format!("Money overview: assets (accounts plus things you own), what is owed, income and spending over a window, spending by category, six months of flow, upcoming dues, loans and investments. member_id looks at one person. {NOTE}"),
        "inputSchema": {"type": "object", "properties": {"member_id": id, "days": {"type": "integer", "description": "window for totals, default 30"}}}},
-      {"name": "ask_tracer", "description": "Ask a plain question (loans ending, what is due, investments, net worth, spending on a tag) and get an answer computed from the data.",
+      {"name": "ask_pebblelab", "description": "Ask a plain question (loans ending, what is due, investments, net worth, spending on a tag) and get an answer computed from the data.",
        "inputSchema": {"type": "object", "required": ["question"], "properties": {"question": s}}}
     ])
 }
@@ -180,7 +180,7 @@ async fn call_tool(s: &Store, c: &Caller, name: &str, a: Value) -> Result<Value,
         }
         "list_tags" => out(s.tags(c).await?.into_iter().map(|(tag, uses)| json!({"tag": tag, "uses": uses})).collect::<Vec<_>>()),
         "get_insights" => out(s.insights(c, args(a)?).await?),
-        "ask_tracer" => out(json!({"answer": s.ask(c, &args::<Ask>(a)?.question).await?})),
+        "ask_pebblelab" => out(json!({"answer": s.ask(c, &args::<Ask>(a)?.question).await?})),
         _ => Err(Error::bad(format!("unknown tool '{name}'"))),
     }
 }
@@ -204,8 +204,8 @@ pub async fn handle(s: &Store, c: &Caller, req: Value) -> Option<Value> {
             ok(id, json!({
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or(json!("2025-03-26")),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "tracer", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": format!("tracer/fin, the money of {who} and their family. Token scopes: {}. {NOTE}", c.scopes().join(", ")),
+                "serverInfo": {"name": "pebblelab", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": format!("pebblelab/fin, the money of {who} and their family. Token scopes: {}. {NOTE}", c.scopes().join(", ")),
             }))
         }
         "ping" => ok(id, json!({})),

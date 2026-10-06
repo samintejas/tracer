@@ -428,7 +428,7 @@ impl Store {
             let owners = a.owners.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join(" and ");
             let vis = if a.joint { "joint" } else { a.visibility.as_str() };
             let bal = if a.kind.is_liability() { -a.balance } else { a.balance };
-            out.push_str(&format!("{},{},{},{},{}\n", cell(&a.name), a.kind.as_str(), cell(&owners), vis, tracer_api::money::format_minor(bal)));
+            out.push_str(&format!("{},{},{},{},{}\n", cell(&a.name), a.kind.as_str(), cell(&owners), vis, pebblelab_api::money::format_minor(bal)));
         }
         out.push_str("\ntransactions\ndate,description,tags,account,kind,amount,by,note\n");
         let mut offset = 0;
@@ -438,7 +438,7 @@ impl Store {
                 let acct = accounts.iter().find(|a| a.id == t.account_id).map(|a| a.name.as_str()).unwrap_or("");
                 out.push_str(&format!(
                     "{},{},{},{},{},{},{},{}\n",
-                    t.date, cell(&t.description), cell(&t.tags.join(" ")), cell(acct), t.kind.as_str(), tracer_api::money::format_minor(t.amount), cell(&t.created_by.name), cell(&t.note)
+                    t.date, cell(&t.description), cell(&t.tags.join(" ")), cell(acct), t.kind.as_str(), pebblelab_api::money::format_minor(t.amount), cell(&t.created_by.name), cell(&t.note)
                 ));
             }
             offset += 500;

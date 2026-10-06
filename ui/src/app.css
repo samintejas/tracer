@@ -1,4 +1,4 @@
-/* tracer/fin screens. Everything here is layout or a data mark that the dots system does not ship;
+/* pebblelab/fin screens. Everything here is layout or a data mark that the dots system does not ship;
    colours, type and controls all come from dots tokens and classes. */
 .d-shell { --rightbar-w: 380px; }
 /* with the 16px the shell already gives main, this makes the 24px 16px the screens are drawn at */
@@ -25,6 +25,8 @@
 @media (prefers-reduced-motion: reduce) { .ins-grow { animation: none; } .ins-line { animation: none; stroke-dashoffset: 0; } }
 
 .d-avatar:has(svg), .d-avatar:has(img) { border-radius: 9999px; }
+/* the design system greys photos out by default; people recognise each other in colour */
+.d-avatar img { filter: none; }
 
 /* insights grid: fills the screen under the bar, cards share the height */
 .dash-wrap { display: flex; flex-direction: column; gap: 16px; height: calc(100dvh - 80px); min-height: 560px; }

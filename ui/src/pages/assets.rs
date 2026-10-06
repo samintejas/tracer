@@ -1,7 +1,7 @@
 use dots_ui::prelude::*;
 use leptos::prelude::*;
-use tracer_api::money::{format_minor, parse_minor};
-use tracer_api::*;
+use pebblelab_api::money::{format_minor, parse_minor};
+use pebblelab_api::*;
 
 use crate::api;
 use crate::fmt;

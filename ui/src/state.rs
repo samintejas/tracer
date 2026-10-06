@@ -1,6 +1,6 @@
 use dots_ui::prelude::*;
 use leptos::prelude::*;
-use tracer_api::*;
+use pebblelab_api::*;
 
 use crate::api;
 

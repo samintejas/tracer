@@ -1,6 +1,7 @@
 #![recursion_limit = "256"] // the tool list in mcp.rs is one big json! literal
 mod cli;
 mod limit;
+mod mail;
 mod mcp;
 mod oauth;
 mod rest;
@@ -12,18 +13,18 @@ use std::time::Duration;
 
 use clap::Parser;
 use cli::{Cli, Cmd};
-use tracer_core::{Config, Store};
+use pebblelab_core::{Config, Store};
 
 #[tokio::main]
 async fn main() {
-    // `tracer tx list | head` should end quietly when the reader goes away, not panic on a broken pipe
+    // `pebblelab tx list | head` should end quietly when the reader goes away, not panic on a broken pipe
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "tracer=info,tower_http=info".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "pebblelab=info,tower_http=info".into()))
         .init();
     let cli = Cli::parse();
     if let Err(e) = real_main(cli).await {
@@ -36,12 +37,16 @@ async fn real_main(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let tz: chrono_tz::Tz = cli.tz.parse().map_err(|_| format!("unknown time zone '{}', use a name like Asia/Kolkata or UTC", cli.tz))?;
     let store = Store::open_pool(&cli.db, cli.db_pool).await?.with_config(Config { tz, signups_open: cli.signups == "open" });
     match cli.cmd {
-        Cmd::Serve { listen, ui_dir, trust_proxy, public_url, google_client_id, google_client_secret, github_client_id, github_client_secret, job_secs } => {
+        Cmd::Serve { listen, ui_dir, trust_proxy, public_url, google_client_id, google_client_secret, github_client_id, github_client_secret, resend_api_key, mail_from, no_password_login, job_secs } => {
             let listener = tokio::net::TcpListener::bind(&listen).await?;
             tracing::info!("listening on http://{listen}  (rest /api, mcp /mcp, ui {ui_dir}; time zone {tz}, sign-ups {})", cli.signups);
             if job_secs > 0 {
                 tokio::spawn(background(store.clone(), Duration::from_secs(job_secs)));
             }
+            // an empty value in .env is the same as not set
+            let set = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+            let (google_client_id, google_client_secret) = (set(google_client_id), set(google_client_secret));
+            let (github_client_id, github_client_secret) = (set(github_client_id), set(github_client_secret));
             let mut providers = HashMap::new();
             if let (Some(id), Some(secret)) = (google_client_id, google_client_secret) {
                 providers.insert("google", oauth::Provider::google(id, secret));
@@ -49,9 +54,14 @@ async fn real_main(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if let (Some(id), Some(secret)) = (github_client_id, github_client_secret) {
                 providers.insert("github", oauth::Provider::github(id, secret));
             }
-            let oauth = oauth::Oauth::new(&public_url, providers);
+            let oauth = oauth::Oauth::new(&public_url, providers).with_password(!no_password_login);
+            if no_password_login && oauth.enabled().is_empty() {
+                return Err("PEBBLELAB_NO_PASSWORD_LOGIN is on but no Google or GitHub sign-in is set up: nobody could sign in".into());
+            }
+            let mailer = mail::Mailer::new(resend_api_key, mail_from);
+            tracing::info!("email: {}", if mailer.enabled() { "resend" } else { "off (set PEBBLELAB_RESEND_API_KEY to send password resets)" });
             tracing::info!("sign in with: {}", if oauth.enabled().is_empty() { "email and password only".to_string() } else { oauth.enabled().join(", ") });
-            let app = rest::router(store, ui_dir.into(), Arc::new(limit::Limits::new(trust_proxy)), Arc::new(oauth));
+            let app = rest::router(store, ui_dir.into(), Arc::new(limit::Limits::new(trust_proxy)), Arc::new(oauth), Arc::new(mailer), public_url);
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown()).await?;
         }
         Cmd::Mcp => {

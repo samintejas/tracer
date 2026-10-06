@@ -1,22 +1,22 @@
-# The database for tracer/fin.   docker compose up -d
-# The app itself runs on the host (cargo run -p tracer -- serve) and connects to it on localhost.
-name: tracer
+# The database for pebblelab/fin.   docker compose up -d
+# The app itself runs on the host (cargo run -p pebblelab -- serve) and connects to it on localhost.
+name: pebblelab
 
 services:
   db:
     image: postgres:17
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tracer
-      POSTGRES_PASSWORD: ${TRACER_PG_PASSWORD:-tracer}
-      POSTGRES_DB: tracer
+      POSTGRES_USER: pebblelab
+      POSTGRES_PASSWORD: ${PEBBLELAB_PG_PASSWORD:-pebblelab}
+      POSTGRES_DB: pebblelab
     ports:
       # local only: nothing outside this machine can reach it
-      - "127.0.0.1:${TRACER_PG_PORT:-5432}:5432"
+      - "127.0.0.1:${PEBBLELAB_PG_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tracer -d tracer"]
+      test: ["CMD-SHELL", "pg_isready -U pebblelab -d pebblelab"]
       interval: 5s
       timeout: 3s
       retries: 10

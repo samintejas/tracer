@@ -12,7 +12,7 @@ fn check_kind(k: &str) -> Result<()> {
 }
 
 fn check_bought(b: &str) -> Result<()> {
-    if b.is_empty() || tracer_api::loan::parse_ym(b).is_some() { Ok(()) } else { Err(Error::bad("bought must be a month as YYYY-MM")) }
+    if b.is_empty() || pebblelab_api::loan::parse_ym(b).is_some() { Ok(()) } else { Err(Error::bad("bought must be a month as YYYY-MM")) }
 }
 
 fn non_negative(v: i64, what: &str) -> Result<i64> {

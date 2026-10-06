@@ -1,8 +1,8 @@
 use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
-use tracer_api::money::{format_minor, parse_minor};
-use tracer_api::*;
+use pebblelab_api::money::{format_minor, parse_minor};
+use pebblelab_api::*;
 
 use crate::api;
 use crate::fmt;
@@ -352,16 +352,16 @@ impl Form {
     }
 
     /// A fixed or recurring deposit worked out from what is typed.
-    fn deposit(&self) -> Option<tracer_api::deposit::DepositCalc> {
+    fn deposit(&self) -> Option<pebblelab_api::deposit::DepositCalc> {
         let (lump, monthly) = if self.invest_kind.get() == "fixed deposit" { (parse_minor(&self.invested.get()).ok()?.abs(), 0) } else { (0, parse_minor(&self.sip.get()).ok()?.abs()) };
         let now = js_sys::Date::new_0();
-        tracer_api::deposit::compute(lump, monthly, self.rate.get().trim().parse().ok()?, self.tenure.get().trim().parse().ok()?, &self.start.get(), (now.get_full_year() as i32, now.get_month() + 1))
+        pebblelab_api::deposit::compute(lump, monthly, self.rate.get().trim().parse().ok()?, self.tenure.get().trim().parse().ok()?, &self.start.get(), (now.get_full_year() as i32, now.get_month() + 1))
     }
 
-    fn loan(&self) -> Option<tracer_api::loan::LoanCalc> {
+    fn loan(&self) -> Option<pebblelab_api::loan::LoanCalc> {
         let total = parse_minor(&self.loan_total.get()).ok()?;
         let now = js_sys::Date::new_0();
-        tracer_api::loan::compute(total, self.rate.get().trim().parse().unwrap_or(0.0), self.tenure.get().trim().parse().ok()?, &self.start.get(), parse_minor(&self.emi.get()).ok().filter(|e| *e > 0), (now.get_full_year() as i32, now.get_month() + 1))
+        pebblelab_api::loan::compute(total, self.rate.get().trim().parse().unwrap_or(0.0), self.tenure.get().trim().parse().ok()?, &self.start.get(), parse_minor(&self.emi.get()).ok().filter(|e| *e > 0), (now.get_full_year() as i32, now.get_month() + 1))
     }
 
     /// What the details add up to, as label and value pairs. Updates as you type.

@@ -1,6 +1,6 @@
 [package]
-name = "tracer-api"
-description = "Wire types shared by the tracer server, CLI, MCP tools and the Leptos UI. No I/O."
+name = "pebblelab-api"
+description = "Wire types shared by the pebblelab server, CLI, MCP tools and the Leptos UI. No I/O."
 version.workspace = true
 edition.workspace = true
 

@@ -1,4 +1,4 @@
-//! Talking to Google and GitHub. The rules for what a sign-in means are in `tracer-core`; this is only the
+//! Talking to Google and GitHub. The rules for what a sign-in means are in `pebblelab-core`; this is only the
 //! conversation with the provider: where to send the browser, and who the provider says came back.
 
 use std::collections::HashMap;
@@ -8,7 +8,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tracer_core::{Error, ExternalIdentity};
+use pebblelab_core::{Error, ExternalIdentity};
 
 /// What differs between providers.
 #[derive(Clone, Copy, PartialEq)]
@@ -66,6 +66,7 @@ pub struct Oauth {
     public_url: String,
     providers: HashMap<&'static str, Provider>,
     http: reqwest::Client,
+    password: bool,
 }
 
 fn failed(provider: &str, what: &str) -> Error {
@@ -75,8 +76,18 @@ fn failed(provider: &str, what: &str) -> Error {
 
 impl Oauth {
     pub fn new(public_url: &str, providers: HashMap<&'static str, Provider>) -> Self {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).user_agent("tracer-fin").build().expect("an http client");
-        Oauth { public_url: public_url.trim_end_matches('/').to_string(), providers, http }
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).user_agent("pebblelab-fin").build().expect("an http client");
+        Oauth { public_url: public_url.trim_end_matches('/').to_string(), providers, http, password: true }
+    }
+
+    /// Whether people may also sign up and in with an email and a password (on unless turned off).
+    pub fn with_password(mut self, on: bool) -> Self {
+        self.password = on;
+        self
+    }
+
+    pub fn password(&self) -> bool {
+        self.password
     }
 
     /// Nothing set up: the sign-in buttons do not show.
@@ -167,9 +178,11 @@ impl Oauth {
                     email_verified: bool,
                     #[serde(default)]
                     name: String,
+                    picture: Option<String>,
                 }
                 let i: Info = get(&p.userinfo_url).send().await.map_err(|e| failed(name, &format!("userinfo: {e}")))?.json().await.map_err(|e| failed(name, &format!("userinfo reply: {e}")))?;
-                Ok(ExternalIdentity { provider: name.into(), subject: i.sub, email: i.email, email_verified: i.email_verified, name: i.name })
+                let picture = self.fetch_picture(i.picture.as_deref(), &["googleusercontent.com"]).await;
+                Ok(ExternalIdentity { provider: name.into(), subject: i.sub, email: i.email, email_verified: i.email_verified, name: i.name, picture })
             }
             Kind::GitHub => {
                 #[derive(Deserialize)]
@@ -178,6 +191,7 @@ impl Oauth {
                     #[serde(default)]
                     login: String,
                     name: Option<String>,
+                    avatar_url: Option<String>,
                 }
                 #[derive(Deserialize)]
                 struct Mail {
@@ -192,8 +206,34 @@ impl Oauth {
                 // the verified primary address; failing that, say what it is and that nobody vouched for it
                 let pick = mails.iter().find(|m| m.primary && m.verified).or_else(|| mails.iter().find(|m| m.verified)).or_else(|| mails.iter().find(|m| m.primary));
                 let (email, verified) = pick.map(|m| (m.email.clone(), m.verified)).unwrap_or_default();
-                Ok(ExternalIdentity { provider: name.into(), subject: who.id.to_string(), email, email_verified: verified, name: who.name.filter(|n| !n.trim().is_empty()).unwrap_or(who.login) })
+                let avatar = who.avatar_url.as_deref().map(|u| format!("{u}{}s=160", if u.contains('?') { '&' } else { '?' }));
+                let picture = self.fetch_picture(avatar.as_deref(), &["githubusercontent.com"]).await;
+                Ok(ExternalIdentity { provider: name.into(), subject: who.id.to_string(), email, email_verified: verified, name: who.name.filter(|n| !n.trim().is_empty()).unwrap_or(who.login), picture })
             }
         }
+    }
+}
+
+impl Oauth {
+    /// Download a provider's profile picture and turn it into a `data:` url, since the app's CSP only shows
+    /// images it serves itself. Only https hosts on `hosts` are fetched, and only small raster images are
+    /// kept. Never an error: a person without a picture signs in just the same.
+    async fn fetch_picture(&self, url: Option<&str>, hosts: &[&str]) -> Option<String> {
+        use base64::Engine;
+        let url = reqwest::Url::parse(url?).ok()?;
+        let host = url.host_str()?;
+        if url.scheme() != "https" || !hosts.iter().any(|h| host == *h || host.ends_with(&format!(".{h}"))) {
+            return None;
+        }
+        let res = self.http.get(url).send().await.ok()?.error_for_status().ok()?;
+        let mime = res.headers().get("content-type")?.to_str().ok()?.split(';').next()?.trim().to_lowercase();
+        if !["image/jpeg", "image/png", "image/webp", "image/gif"].contains(&mime.as_str()) {
+            return None;
+        }
+        let bytes = res.bytes().await.ok()?;
+        if bytes.is_empty() || bytes.len() > 250_000 {
+            return None;
+        }
+        Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)))
     }
 }

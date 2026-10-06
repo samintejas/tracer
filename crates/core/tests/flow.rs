@@ -1,5 +1,5 @@
-use tracer_core::api::*;
-use tracer_core::{Caller, Error, Store};
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Error, Store};
 
 fn acct(name: &str, kind: AccountKind, balance: i64) -> NewAccount {
     NewAccount {

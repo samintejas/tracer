@@ -162,7 +162,7 @@ impl Store {
         })
     }
 
-    /// "ask tracer": answers a plain question from the caller's own data. Rule based on purpose: it only
+    /// "ask pebblelab": answers a plain question from the caller's own data. Rule based on purpose: it only
     /// states figures it can compute, and says so when it cannot.
     pub async fn ask(&self, c: &Caller, question: &str) -> Result<String> {
         c.need("read")?;

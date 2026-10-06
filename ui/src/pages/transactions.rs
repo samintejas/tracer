@@ -1,8 +1,8 @@
 use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
-use tracer_api::money::{format_minor, parse_minor};
-use tracer_api::*;
+use pebblelab_api::money::{format_minor, parse_minor};
+use pebblelab_api::*;
 use wasm_bindgen::JsCast;
 
 use crate::api;

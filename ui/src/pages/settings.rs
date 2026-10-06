@@ -1,7 +1,7 @@
 use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
-use tracer_api::*;
+use pebblelab_api::*;
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -10,10 +10,10 @@ use crate::state::AppState;
 
 const TABS: [(&str, &str, &str, &str); 5] = [
     ("profile", "profile", USER, "your name, picture and how to reach you."),
-    ("prefs", "preferences", SLIDERS, "how tracer/fin looks and what it tells you about."),
+    ("prefs", "preferences", SLIDERS, "how pebblelab/fin looks and what it tells you about."),
     ("security", "security", LOCK, "password, sessions and deleting your account."),
     ("family", "family", USERS, "optional. share accounts and hold joint ones."),
-    ("connectors", "connectors", PLUG, "add this address and token to claude code, chatgpt or any mcp client."),
+    ("connectors", "connectors", PLUG, "give claude code, chatgpt or any mcp client its own token, with its own permissions."),
 ];
 
 fn base64(bytes: &[u8]) -> String {
@@ -149,7 +149,7 @@ fn ProfileTab() -> impl IntoView {
                     </div>
                 </div>
             </div>
-            <div class="d-card__body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:16px">
+            <div class="d-card__body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:16px;align-items:start">
                 <div class="d-field">
                     <label class="d-label" for="pf-name">"name"</label>
                     <input class="d-input" id="pf-name" type="text" autocomplete="name" prop:value=move || name.get() on:input=move |e| name.set(event_target_value(&e))/>
@@ -189,7 +189,7 @@ fn Prefs() -> impl IntoView {
     };
     let export = move |_| {
         leptos::task::spawn_local(async move {
-            if let Err(e) = api::download("/export.csv", "tracer-fin.csv").await {
+            if let Err(e) = api::download("/export.csv", "pebblelab-fin.csv").await {
                 app.fail(&e);
             }
         });
@@ -464,103 +464,203 @@ fn FamilyTab() -> impl IntoView {
     }
 }
 
+/// A read-only box with a copy button: for commands and config the person pastes somewhere else.
+#[component]
+fn CopyBox(label: &'static str, #[prop(into)] value: Signal<String>, #[prop(optional)] hint: &'static str) -> impl IntoView {
+    let app = expect_context::<AppState>();
+    view! {
+        <div class="d-field">
+            <label class="d-label">{label}</label>
+            <div class="d-row" style="flex-wrap:nowrap;gap:4px;align-items:flex-start">
+                // rows is the fallback for browsers without field-sizing, which sizes the box to what it holds
+                <textarea class="d-input" readonly=true rows=move || value.with(|v| v.lines().count().max(1)) aria-label=label prop:value=move || value.get()
+                    style="flex:1;min-width:0;height:auto;min-height:0;field-sizing:content;resize:none;overflow:hidden;font-family:var(--font-mono, monospace);font-size:12px;line-height:1.5;padding:8px 10px"></textarea>
+                <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label=format!("copy {label}") title="copy" on:click=move |_| copy(app, value.get_untracked())><Ico d=COPY/></button>
+            </div>
+            {(!hint.is_empty()).then(|| view! { <span class="d-hint">{hint}</span> })}
+        </div>
+    }
+}
+
+const PERMS: [(&str, &str); 4] = [
+    ("read accounts and balances", "read"),
+    ("read transactions", "transactions"),
+    ("add transactions", "add"),
+    ("edit or delete transactions", "edit"),
+];
+
+/// Tokens for Claude and other clients. Each one has its own name and its own permissions, so one can be
+/// changed or cut off without touching the others.
 #[component]
 fn Connectors() -> impl IntoView {
     let app = expect_context::<AppState>();
-    let current = RwSignal::new(None::<Connector>);
-    let fresh = RwSignal::new(None::<String>);
+    let list = RwSignal::new(Vec::<Connector>::new());
     let loaded = RwSignal::new(false);
-    let load = move || {
-        leptos::task::spawn_local(async move {
-            if let Ok(l) = api::get::<Vec<Connector>>("/connectors").await {
-                current.set(l.into_iter().next());
-            }
-            loaded.set(true);
-        });
-    };
-    load();
+    // the token just made, with its name: the only time it is shown in full
+    let fresh = RwSignal::new(None::<(String, String)>);
+    let creating = RwSignal::new(false);
+    let (new_name, busy) = (RwSignal::new(String::new()), RwSignal::new(false));
+    let new_scopes = RwSignal::new(vec!["read".to_string(), "transactions".to_string()]);
+    let revoke = RwSignal::new(None::<Connector>);
+    let confirm = RwSignal::new(false);
+    leptos::task::spawn_local(async move {
+        if let Ok(l) = api::get::<Vec<Connector>>("/connectors").await {
+            list.set(l);
+        }
+        loaded.set(true);
+    });
     let url = format!("{}/mcp", web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default());
     let url2 = url.clone();
-    let scopes = move || current.get().map(|c| c.scopes).unwrap_or_else(|| vec!["read".into(), "transactions".into()]);
-    // a new token replaces the old one, which stops working
-    let rotate = move |_| {
-        let keep = scopes();
-        let old = current.get_untracked().map(|c| c.id);
+    let (url3, url4) = (url.clone(), url.clone());
+    let tok = move || fresh.with(|f| f.as_ref().map(|(_, t)| t.clone())).unwrap_or_else(|| "YOUR_TOKEN".to_string());
+    let create = move |e: leptos::ev::SubmitEvent| {
+        e.prevent_default();
+        let name = new_name.get_untracked();
+        if name.trim().is_empty() {
+            return app.error("name the token after the client that will use it, e.g. claude code");
+        }
+        busy.set(true);
         leptos::task::spawn_local(async move {
-            if let Some(id) = old {
-                if let Err(e) = api::delete(&format!("/connectors/{id}")).await {
-                    return app.fail(&e);
-                }
-            }
-            match api::post::<CreatedConnector>("/connectors", &serde_json::json!({"name": "mcp client", "scopes": keep})).await {
+            match api::post::<CreatedConnector>("/connectors", &serde_json::json!({ "name": name, "scopes": new_scopes.get_untracked() })).await {
                 Ok(c) => {
-                    fresh.set(Some(c.token));
-                    current.set(Some(c.connector));
+                    fresh.set(Some((c.connector.name.clone(), c.token)));
+                    list.update(|l| l.push(c.connector));
+                    creating.set(false);
+                    new_name.set(String::new());
                 }
                 Err(e) => app.fail(&e),
             }
+            busy.set(false);
         });
     };
-    let set_scope = move |scope: &'static str, on: bool| {
-        let Some(c) = current.get_untracked() else { return };
-        let mut list: Vec<String> = c.scopes.into_iter().filter(|s| s != scope).collect();
+    let set_scope = move |id: i64, scope: &'static str, on: bool| {
+        let Some(c) = list.with_untracked(|l| l.iter().find(|c| c.id == id).cloned()) else { return };
+        let mut scopes: Vec<String> = c.scopes.into_iter().filter(|s| s != scope).collect();
         if on {
-            list.push(scope.into());
+            scopes.push(scope.into());
         }
         leptos::task::spawn_local(async move {
-            match api::patch::<Connector>(&format!("/connectors/{}", c.id), &serde_json::json!({ "scopes": list })).await {
-                Ok(c) => current.set(Some(c)),
+            match api::patch::<Connector>(&format!("/connectors/{id}"), &serde_json::json!({ "scopes": scopes })).await {
+                Ok(c) => list.update(|l| l.iter_mut().filter(|x| x.id == id).for_each(|x| *x = c.clone())),
                 Err(e) => app.fail(&e),
             }
         });
     };
-    let token_text = move || match (fresh.get(), current.get()) {
-        (Some(t), _) => t,
-        (None, Some(c)) => format!("trc_••••••••••••{}", c.tail),
-        (None, None) => "no token yet".to_string(),
+    let do_revoke = move |_| {
+        let Some(c) = revoke.get_untracked() else { return };
+        confirm.set(false);
+        leptos::task::spawn_local(async move {
+            match api::delete(&format!("/connectors/{}", c.id)).await {
+                Ok(_) => {
+                    list.update(|l| l.retain(|x| x.id != c.id));
+                    app.ok("token revoked");
+                }
+                Err(e) => app.fail(&e),
+            }
+        });
     };
-    let hint = move || match (fresh.get().is_some(), current.get()) {
-        (true, _) => "new token made just now. copy it: it is shown in full only this once.".to_string(),
-        (false, Some(c)) => format!("created {}. shown once in full when it is made.{}", crate::fmt::day(c.created_at.get(..10).unwrap_or("")), c.last_used_at.as_ref().map(|u| format!(" last used {}.", crate::fmt::day(u.get(..10).unwrap_or("")))).unwrap_or_default()),
-        (false, None) => "make a token to connect a client.".to_string(),
-    };
-    let perm = move |label: &'static str, scope: &'static str| view! {
-        <label class="set__row"><span>{label}</span>
-            <input type="checkbox" role="switch" class="d-switch" disabled=move || current.get().is_none() prop:checked=move || current.get().is_some_and(|c| c.scopes.iter().any(|s| s == scope)) on:change=move |e| set_scope(scope, event_target_checked(&e))/>
-        </label>
-    };
+    let day = |s: &str| crate::fmt::day(s.get(..10).unwrap_or(""));
     view! {
-        <div class="set__grid">
-            <section class="d-card" aria-labelledby="cn-e" style="max-width:640px">
-                <header class="d-card__head"><h2 class="d-card__title" id="cn-e">"mcp access"</h2></header>
-                <div class="d-card__body" style="display:flex;flex-direction:column;gap:12px">
-                    <div class="d-field">
-                        <label class="d-label" for="cn-url">"server address (mcp)"</label>
-                        <div class="d-row" style="flex-wrap:nowrap;gap:4px">
-                            <input class="d-input" id="cn-url" type="text" readonly=true value=url style="flex:1;min-width:0"/>
-                            <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="copy server address" title="copy" on:click=move |_| copy(app, url2.clone())><Ico d=COPY/></button>
-                        </div>
+        <div style="display:flex;flex-direction:column;gap:16px;max-width:640px">
+            <section class="d-card" aria-labelledby="cn-e">
+                <header class="d-card__head"><h2 class="d-card__title" id="cn-e">"server address (mcp)"</h2></header>
+                <div class="d-card__body" style="display:flex;flex-direction:column;gap:8px">
+                    <div class="d-row" style="flex-wrap:nowrap;gap:4px">
+                        <input class="d-input" id="cn-url" type="text" readonly=true aria-label="server address" value=url style="flex:1;min-width:0"/>
+                        <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="copy server address" title="copy" on:click=move |_| copy(app, url2.clone())><Ico d=COPY/></button>
                     </div>
-                    <div class="d-field">
-                        <label class="d-label" for="cn-tok">"access token"</label>
-                        <div class="d-row" style="flex-wrap:nowrap;gap:4px">
-                            <input class="d-input" id="cn-tok" type="text" readonly=true aria-describedby="cn-tok-h" prop:value=token_text style="flex:1;min-width:0"/>
-                            <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="copy token" title="copy" disabled=move || fresh.get().is_none() on:click=move |_| if let Some(t) = fresh.get_untracked() { copy(app, t) }><Ico d=COPY/></button>
-                            <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="make a new token. the old one stops working" title="new token" disabled=move || !loaded.get() on:click=rotate><Ico d=ROTATE/></button>
-                        </div>
-                        <span class="d-hint" id="cn-tok-h">{hint}</span>
-                    </div>
+                    <span class="d-hint">"clients send a token as a bearer token. make one per client below."</span>
                 </div>
             </section>
-            <section class="d-card" aria-labelledby="cn-p" style="max-width:640px">
-                <header class="d-card__head"><h2 class="d-card__title" id="cn-p">"what the token may do"</h2></header>
-                <div class="d-card__body">
-                    {perm("read accounts and balances", "read")}
-                    {perm("read transactions", "transactions")}
-                    {perm("add transactions", "add")}
-                    {perm("edit or delete transactions", "edit")}
+            <section class="d-card" aria-labelledby="cn-c">
+                <header class="d-card__head"><h2 class="d-card__title" id="cn-c">"connect a client"</h2></header>
+                <div class="d-card__body" style="display:flex;flex-direction:column;gap:16px">
+                    <span class="d-hint">{move || if fresh.with(|f| f.is_some()) { "these include the token you just made." } else { "replace YOUR_TOKEN with a token from below. a token is only shown in full when it is made." }}</span>
+                    <CopyBox label="claude code (terminal)" value=Signal::derive(move || format!("claude mcp add --transport http pebblelab {} \\\n  --header \"Authorization: Bearer {}\"", url3, tok()))/>
+                    <CopyBox label="config file (.mcp.json and other clients)" value=Signal::derive(move || format!("{{\n  \"mcpServers\": {{\n    \"pebblelab\": {{\n      \"type\": \"http\",\n      \"url\": \"{}\",\n      \"headers\": {{ \"Authorization\": \"Bearer {}\" }}\n    }}\n  }}\n}}", url4, tok()))/>
+                    <CopyBox label="claude.ai and the mobile app: header value" value=Signal::derive(move || format!("Bearer {}", tok())) hint="claude.ai, then customize, connectors, add custom connector. paste the server address, add a header named Authorization with this value. it then shows in the mobile app too. the server must be reachable from the internet over https."/>
                 </div>
             </section>
+            {move || fresh.get().map(|(name, token)| {
+                let t2 = token.clone();
+                view! {
+                    <section class="d-card" aria-labelledby="cn-new" role="status">
+                        <header class="d-card__head"><h2 class="d-card__title" id="cn-new">{format!("token for {name}")}</h2></header>
+                        <div class="d-card__body" style="display:flex;flex-direction:column;gap:8px">
+                            <div class="d-row" style="flex-wrap:nowrap;gap:4px">
+                                <input class="d-input" type="text" readonly=true aria-label="new token" value=token style="flex:1;min-width:0"/>
+                                <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="copy token" title="copy" on:click=move |_| copy(app, t2.clone())><Ico d=COPY/></button>
+                            </div>
+                            <span class="d-hint">"copy it now: it is shown in full only this once."</span>
+                        </div>
+                        <footer class="d-card__foot"><button type="button" class="d-btn" on:click=move |_| fresh.set(None)>"done"</button></footer>
+                    </section>
+                }
+            })}
+            <div class="d-row" style="justify-content:space-between">
+                <h2 class="d-card__title">"tokens"</h2>
+                <button type="button" class="d-btn d-btn--primary" disabled=move || creating.get() on:click=move |_| creating.set(true)><Ico d=PLUS/>"new token"</button>
+            </div>
+            {move || creating.get().then(|| view! {
+                <form class="d-card" on:submit=create aria-label="new token">
+                    <div class="d-card__body" style="display:flex;flex-direction:column;gap:12px">
+                        <div class="d-field">
+                            <label class="d-label" for="cn-name">"name"</label>
+                            <input class="d-input" id="cn-name" type="text" placeholder="claude code" autocomplete="off" prop:value=move || new_name.get() on:input=move |e| new_name.set(event_target_value(&e))/>
+                        </div>
+                        <div>
+                            {PERMS.map(|(label, scope)| view! {
+                                <label class="set__row"><span>{label}</span>
+                                    <input type="checkbox" role="switch" class="d-switch" prop:checked=move || new_scopes.with(|l| l.iter().any(|s| s == scope))
+                                        on:change=move |e| {
+                                            let on = event_target_checked(&e);
+                                            new_scopes.update(|l| { l.retain(|s| s != scope); if on { l.push(scope.into()); } });
+                                        }/>
+                                </label>
+                            })}
+                        </div>
+                    </div>
+                    <footer class="d-card__foot">
+                        <button type="button" class="d-btn" on:click=move |_| creating.set(false)>"cancel"</button>
+                        <button type="submit" class="d-btn d-btn--primary" disabled=move || busy.get()><Ico d=CHECK/>"make token"</button>
+                    </footer>
+                </form>
+            })}
+            {move || (loaded.get() && list.with(|l| l.is_empty()) && !creating.get()).then(|| view! {
+                <p class="d-hint" style="margin:0">"no tokens yet. make one for each client you connect, so you can change or cut one off without touching the others."</p>
+            })}
+            <For each=move || list.get() key=|c| c.id children=move |c| {
+                let id = c.id;
+                let meta = format!("created {}{}", day(&c.created_at), c.last_used_at.as_deref().map(|u| format!(", last used {}", day(u))).unwrap_or_else(|| ", never used".into()));
+                let c2 = c.clone();
+                view! {
+                    <section class="d-card" aria-label=format!("token {}", c.name)>
+                        <header class="d-card__head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;height:auto;padding-top:12px;padding-bottom:12px">
+                            <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                                <h3 class="d-card__title">{c.name.clone()}<span class="d-badge" style="margin-left:8px">{format!("…{}", c.tail)}</span></h3>
+                                <span class="d-hint">{meta}</span>
+                            </div>
+                            <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label=format!("revoke token {}", c.name) title="revoke"
+                                on:click=move |_| { revoke.set(Some(c2.clone())); confirm.set(true); }><Ico d=TRASH/></button>
+                        </header>
+                        <div class="d-card__body">
+                            {PERMS.map(|(label, scope)| view! {
+                                <label class="set__row"><span>{label}</span>
+                                    <input type="checkbox" role="switch" class="d-switch"
+                                        prop:checked=move || list.with(|l| l.iter().any(|x| x.id == id && x.scopes.iter().any(|s| s == scope)))
+                                        on:change=move |e| set_scope(id, scope, event_target_checked(&e))/>
+                                </label>
+                            })}
+                        </div>
+                    </section>
+                }
+            }/>
         </div>
+        <Dialog open=confirm title="revoke token" footer=move || view! {
+            <Button on:click=move |_| confirm.set(false)>"cancel"</Button>
+            <Button variant=ButtonVariant::Danger on:click=do_revoke>"revoke"</Button>
+        }>
+            <p>{move || revoke.get().map(|c| format!("{} stops working right away. clients using it will need a new token.", c.name)).unwrap_or_default()}</p>
+        </Dialog>
     }
 }

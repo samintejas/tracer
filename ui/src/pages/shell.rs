@@ -111,9 +111,9 @@ pub fn AppShell() -> impl IntoView {
         <Shell state=shell height="100dvh">
             <Sidebar>
                 <SidebarHead>
-                    <button type="button" class="d-sidebar__tile" aria-label="tracer/fin, go to transactions" on:click=go_tx>
+                    <button type="button" class="d-sidebar__tile" aria-label="pebblelab/fin, go to transactions" on:click=go_tx>
                         <Mark/>
-                        <span class="d-sidebar__who"><b>"tracer/fin"</b><small>{tile_name}</small></span>
+                        <span class="d-sidebar__who"><b>"pebblelab/fin"</b><small>{tile_name}</small></span>
                     </button>
                 </SidebarHead>
                 <SidebarContent>

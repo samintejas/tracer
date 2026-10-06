@@ -21,15 +21,17 @@ pub struct ExternalIdentity {
     /// The provider vouches that the person controls `email`.
     pub email_verified: bool,
     pub name: String,
+    /// Their profile picture as a `data:image/…` url, when the provider has one and it could be fetched.
+    pub picture: Option<String>,
 }
 
-fn random(prefix: &str, bytes: usize) -> String {
+pub(crate) fn random(prefix: &str, bytes: usize) -> String {
     let mut raw = vec![0u8; bytes];
     rand::fill(&mut raw[..]);
     format!("{prefix}{}", hex::encode(raw))
 }
 
-fn hash(s: &str) -> String {
+pub(crate) fn hash(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 
@@ -117,6 +119,10 @@ impl Store {
                 id
             }
         };
+        // a picture from the provider fills a gap; it never replaces one the person chose themselves
+        if let Some(pic) = who.picture.as_deref().filter(|p| p.starts_with("data:image/") && p.len() <= 400_000) {
+            sqlx::query("UPDATE users SET picture = $1 WHERE id = $2 AND picture IS NULL").bind(pic).bind(user_id).execute(&mut *db).await?;
+        }
         let code = random("lgc_", 32);
         sqlx::query("DELETE FROM login_codes WHERE created_at < utc_text(now() - interval '2 minutes')").execute(&mut *db).await?;
         sqlx::query("INSERT INTO login_codes (code_hash, user_id) VALUES ($1, $2)").bind(hash(&code)).bind(user_id).execute(&mut *db).await?;

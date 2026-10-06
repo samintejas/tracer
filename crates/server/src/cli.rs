@@ -1,32 +1,32 @@
 //! The command line. It talks to the database directly, so it works with no server running; `--as` says
-//! whose data it is (a person, with full rights). Everything it does goes through the same `tracer-core`
+//! whose data it is (a person, with full rights). Everything it does goes through the same `pebblelab-core`
 //! functions as the REST API and MCP tools.
 
 use clap::{Args, Parser, Subcommand};
-use tracer_core::api::money::{format_minor, group_digits, parse_minor};
-use tracer_core::api::*;
-use tracer_core::{Caller, Error, Store};
+use pebblelab_core::api::money::{format_minor, group_digits, parse_minor};
+use pebblelab_core::api::*;
+use pebblelab_core::{Caller, Error, Store};
 
 #[derive(Parser)]
-#[command(name = "tracer", version, about = "tracer/fin: a household money tracker (CLI, REST and MCP in one binary)")]
+#[command(name = "pebblelab", version, about = "pebblelab/fin: a household money tracker (CLI, REST and MCP in one binary)")]
 pub struct Cli {
     /// Postgres database. The default is the one `docker compose up -d` starts.
-    #[arg(long, global = true, env = "TRACER_DB", default_value = tracer_core::DEFAULT_DB, hide_env_values = true)]
+    #[arg(long, global = true, env = "PEBBLELAB_DB", default_value = pebblelab_core::DEFAULT_DB, hide_env_values = true)]
     pub db: String,
     /// Act as this person (their email). Not needed when there is only one user.
-    #[arg(long = "as", global = true, env = "TRACER_USER")]
+    #[arg(long = "as", global = true, env = "PEBBLELAB_USER")]
     pub who: Option<String>,
     /// Print JSON instead of a table.
     #[arg(long, global = true)]
     pub json: bool,
     /// Whose clock "today" follows, e.g. Asia/Kolkata. Dates left blank, renewals and reminders use it.
-    #[arg(long, global = true, env = "TRACER_TZ", default_value = "UTC")]
+    #[arg(long, global = true, env = "PEBBLELAB_TZ", default_value = "UTC")]
     pub tz: String,
     /// Let anyone create an account (`open`), or only the CLI (`closed`).
-    #[arg(long, global = true, env = "TRACER_SIGNUPS", default_value = "open", value_parser = ["open", "closed"])]
+    #[arg(long, global = true, env = "PEBBLELAB_SIGNUPS", default_value = "open", value_parser = ["open", "closed"])]
     pub signups: String,
     /// How many database connections the server may hold.
-    #[arg(long, global = true, env = "TRACER_DB_POOL", default_value_t = 16)]
+    #[arg(long, global = true, env = "PEBBLELAB_DB_POOL", default_value_t = 16)]
     pub db_pool: u32,
     #[command(subcommand)]
     pub cmd: Cmd,
@@ -36,30 +36,40 @@ pub struct Cli {
 pub enum Cmd {
     /// Run the REST API, the MCP endpoint (POST /mcp) and the web app.
     Serve {
-        #[arg(long, env = "TRACER_LISTEN", default_value = "127.0.0.1:3000")]
+        #[arg(long, env = "PEBBLELAB_LISTEN", default_value = "127.0.0.1:3000")]
         listen: String,
         /// The built web app.
-        #[arg(long, env = "TRACER_UI_DIR", default_value = "ui/dist")]
+        #[arg(long, env = "PEBBLELAB_UI_DIR", default_value = "ui/dist")]
         ui_dir: String,
         /// The server sits behind a reverse proxy that sets X-Forwarded-For: take the client address from it.
-        #[arg(long, env = "TRACER_TRUST_PROXY")]
+        #[arg(long, env = "PEBBLELAB_TRUST_PROXY")]
         trust_proxy: bool,
-        /// The address people reach this server at, e.g. https://tracer.example.com. Google and GitHub send
+        /// The address people reach this server at, e.g. https://pebblelab.example.com. Google and GitHub send
         /// them back to `<it>/api/auth/<provider>/callback`.
-        #[arg(long, env = "TRACER_PUBLIC_URL", default_value = "http://127.0.0.1:3000")]
+        #[arg(long, env = "PEBBLELAB_PUBLIC_URL", default_value = "http://127.0.0.1:3000")]
         public_url: String,
         /// Sign in with Google: the OAuth client id and secret from the Google Cloud console.
-        #[arg(long, env = "TRACER_GOOGLE_CLIENT_ID")]
+        #[arg(long, env = "PEBBLELAB_GOOGLE_CLIENT_ID")]
         google_client_id: Option<String>,
-        #[arg(long, env = "TRACER_GOOGLE_CLIENT_SECRET", hide_env_values = true)]
+        #[arg(long, env = "PEBBLELAB_GOOGLE_CLIENT_SECRET", hide_env_values = true)]
         google_client_secret: Option<String>,
         /// Sign in with GitHub: an OAuth app's client id and secret.
-        #[arg(long, env = "TRACER_GITHUB_CLIENT_ID")]
+        #[arg(long, env = "PEBBLELAB_GITHUB_CLIENT_ID")]
         github_client_id: Option<String>,
-        #[arg(long, env = "TRACER_GITHUB_CLIENT_SECRET", hide_env_values = true)]
+        #[arg(long, env = "PEBBLELAB_GITHUB_CLIENT_SECRET", hide_env_values = true)]
         github_client_secret: Option<String>,
+        /// Turn email-and-password sign-up, sign-in and reset off, so the only way in is a provider (Google, GitHub).
+        /// Needs at least one provider set up, or nobody can sign in.
+        #[arg(long, env = "PEBBLELAB_NO_PASSWORD_LOGIN")]
+        no_password_login: bool,
+        /// Send email (password resets) through Resend: an API key from resend.com.
+        #[arg(long, env = "PEBBLELAB_RESEND_API_KEY", hide_env_values = true)]
+        resend_api_key: Option<String>,
+        /// Who email comes from. Resend only lets you use an address on a domain you have verified there.
+        #[arg(long, env = "PEBBLELAB_MAIL_FROM", default_value = "pebblelab/fin <onboarding@resend.dev>")]
+        mail_from: String,
         /// Seconds between background runs (renewals, reminders, tidying). 0 turns them off.
-        #[arg(long, env = "TRACER_JOB_SECS", default_value_t = 900)]
+        #[arg(long, env = "PEBBLELAB_JOB_SECS", default_value_t = 900)]
         job_secs: u64,
     },
     /// Run the background work once (renewals, reminders, tidying) and exit. For a cron job when the
@@ -104,17 +114,17 @@ pub enum Cmd {
 
 #[derive(Subcommand)]
 pub enum UserCmd {
-    /// Create a person. The password comes from --password or TRACER_PASSWORD.
+    /// Create a person. The password comes from --password or PEBBLELAB_PASSWORD.
     Add {
         name: String,
         email: String,
-        #[arg(long, env = "TRACER_PASSWORD", hide_env_values = true)]
+        #[arg(long, env = "PEBBLELAB_PASSWORD", hide_env_values = true)]
         password: String,
     },
     /// Set a password (how a forgotten one is reset). Signs the person out everywhere.
     Passwd {
         email: String,
-        #[arg(long, env = "TRACER_PASSWORD", hide_env_values = true)]
+        #[arg(long, env = "PEBBLELAB_PASSWORD", hide_env_values = true)]
         password: String,
     },
 }
@@ -331,7 +341,7 @@ async fn account(s: &Store, c: &Caller, what: &str) -> Result<Account, Error> {
     let hits: Vec<&Account> = all.iter().filter(|a| a.name.contains(&w)).collect();
     match hits.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(Error::bad(format!("no account matches '{what}'. try `tracer accounts`"))),
+        [] => Err(Error::bad(format!("no account matches '{what}'. try `pebblelab accounts`"))),
         many => Err(Error::bad(format!("'{what}' matches {}: {}", many.len(), many.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")))),
     }
 }
@@ -365,12 +375,12 @@ fn show_json<T: serde::Serialize>(v: &T) {
 
 /// Who the command acts as.
 pub async fn caller(s: &Store, who: &Option<String>) -> Result<Caller, Error> {
-    if let Ok(token) = std::env::var("TRACER_TOKEN") {
+    if let Ok(token) = std::env::var("PEBBLELAB_TOKEN") {
         return s.authenticate(&token).await;
     }
     match who {
         Some(email) => Ok(Caller::full(s.user_by_email(email).await?.id)),
-        None => Err(Error::bad("say who you are with --as <email> (or TRACER_USER), or set TRACER_TOKEN")),
+        None => Err(Error::bad("say who you are with --as <email> (or PEBBLELAB_USER), or set PEBBLELAB_TOKEN")),
     }
 }
 

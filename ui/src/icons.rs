@@ -20,7 +20,6 @@ pub const SUN: &str = "M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8zM12 2v2M12 20v2M4.93 4.
 pub const DOWNLOAD: &str = "M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5";
 pub const SIGN_OUT: &str = "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9";
 pub const COPY: &str = "M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2zM4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2";
-pub const ROTATE: &str = "M3 12a9 9 0 0 1 9-9a9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9a9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5";
 pub const CLIP: &str = "M13.234 20.252 21 12.3M16 6l-8.414 8.586a2 2 0 0 0 0 2.828a2 2 0 0 0 2.828 0l8.414-8.586a4 4 0 0 0 0-5.656a4 4 0 0 0-5.656 0l-8.415 8.585a6 6 0 1 0 8.486 8.486";
 pub const USER: &str = "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 3a4 4 0 1 0 0 8a4 4 0 0 0 0-8z";
 pub const SLIDERS: &str = "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4";
@@ -37,7 +36,7 @@ pub fn Ico(d: &'static str, #[prop(optional)] small: bool, #[prop(optional)] lar
     view! { <span class=class aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d=d></path></svg></span> }
 }
 
-/// The tracer/fin mark: three dots rising.
+/// The pebblelab/fin mark: three dots rising.
 #[component]
 pub fn Mark() -> impl IntoView {
     view! {

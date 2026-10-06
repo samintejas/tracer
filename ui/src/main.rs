@@ -19,7 +19,7 @@ fn App() -> impl IntoView {
     view! {
         <DotsStyles font_base="/fonts/"/>
         <style>{include_str!("app.css")}</style>
-        <DotsProvider persist_theme="tracer:theme">
+        <DotsProvider persist_theme="pebblelab:theme">
             <Router>
                 <Routes fallback=|| view! { <Redirect path="/"/> }>
                     <Route path=path!("/") view=pages::Landing/>

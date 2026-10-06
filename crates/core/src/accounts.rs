@@ -50,7 +50,7 @@ fn validate(kind: AccountKind, d: &AccountDetails) -> Result<()> {
             return Err(Error::bad("a loan needs a tenure in months"));
         }
         match &d.start {
-            Some(s) if tracer_api::loan::parse_ym(s).is_some() => {}
+            Some(s) if pebblelab_api::loan::parse_ym(s).is_some() => {}
             _ => return Err(Error::bad("a loan needs a start month as YYYY-MM")),
         }
     }
@@ -75,7 +75,7 @@ fn validate(kind: AccountKind, d: &AccountDetails) -> Result<()> {
                 return Err(Error::bad("a deposit needs its term in months (tenure)"));
             }
             match &d.start {
-                Some(s) if tracer_api::loan::parse_ym(s).is_some() => {}
+                Some(s) if pebblelab_api::loan::parse_ym(s).is_some() => {}
                 _ => return Err(Error::bad("a deposit needs the month it was opened as YYYY-MM (start)")),
             }
         }
@@ -156,7 +156,7 @@ impl Store {
             let details = details_from(&r);
             let raw = r.get::<i64, _>("opening") + sums.get(&id).copied().unwrap_or(0);
             let loan = if kind == AccountKind::Loan {
-                tracer_api::loan::compute(
+                pebblelab_api::loan::compute(
                     details.loan_total.unwrap_or(0),
                     details.rate.unwrap_or(0.0),
                     details.tenure.unwrap_or(0),
@@ -172,7 +172,7 @@ impl Store {
                 .then(|| {
                     let lump = if details.invest_kind == "fixed deposit" { details.invested.unwrap_or(0) } else { 0 };
                     let monthly = if details.invest_kind == "recurring deposit" { details.sip.unwrap_or(0) } else { 0 };
-                    tracer_api::deposit::compute(lump, monthly, details.rate.unwrap_or(0.0), details.tenure.unwrap_or(0), details.start.as_deref().unwrap_or(""), (now.year(), now.month()))
+                    pebblelab_api::deposit::compute(lump, monthly, details.rate.unwrap_or(0.0), details.tenure.unwrap_or(0), details.start.as_deref().unwrap_or(""), (now.year(), now.month()))
                 })
                 .flatten();
             let balance = match (kind, &loan) {
@@ -281,7 +281,7 @@ impl Store {
                 let lump = if d.invest_kind == "fixed deposit" { d.invested.unwrap_or(0) } else { 0 };
                 let monthly = if d.invest_kind == "recurring deposit" { d.sip.unwrap_or(0) } else { 0 };
                 let now = self.today();
-                tracer_api::deposit::compute(lump, monthly, d.rate.unwrap_or(0.0), d.tenure.unwrap_or(0), d.start.as_deref().unwrap_or(""), (now.year(), now.month())).map(|c| c.value)
+                pebblelab_api::deposit::compute(lump, monthly, d.rate.unwrap_or(0.0), d.tenure.unwrap_or(0), d.start.as_deref().unwrap_or(""), (now.year(), now.month())).map(|c| c.value)
             })
             .flatten();
         let shown = b.balance.or(estimate).unwrap_or(0);

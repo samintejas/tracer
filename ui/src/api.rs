@@ -5,9 +5,9 @@ use std::cell::RefCell;
 use gloo_net::http::Request;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracer_api::*;
+use pebblelab_api::*;
 
-const KEY: &str = "tracer:token";
+const KEY: &str = "pebblelab:token";
 
 thread_local! {
     static TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -154,6 +154,11 @@ pub async fn open_attachment(id: i64, name: &str) -> Result<(), ApiError> {
 /// Which providers people can sign in with here.
 pub async fn providers() -> Vec<String> {
     get("/auth/providers").await.unwrap_or_default()
+}
+
+/// Can people sign in with an email and a password here, or only through a provider? On if the server cannot say.
+pub async fn password_login() -> bool {
+    get::<serde_json::Value>("/auth/options").await.ok().and_then(|v| v["password"].as_bool()).unwrap_or(true)
 }
 
 /// What follows the `#` in the address, decoded as `a=b&c=d`.

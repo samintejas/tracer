@@ -1,11 +1,11 @@
 [package]
-name = "tracer-core"
-description = "tracer's business logic over Postgres: the one place rules live, used by the CLI, REST and MCP front ends."
+name = "pebblelab-core"
+description = "pebblelab's business logic over Postgres: the one place rules live, used by the CLI, REST and MCP front ends."
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tracer-api = { path = "../api" }
+pebblelab-api = { path = "../api" }
 serde.workspace = true
 serde_json.workspace = true
 argon2 = "0.5"

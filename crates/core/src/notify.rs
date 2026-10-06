@@ -14,7 +14,7 @@ fn sym(cur: &str) -> &'static str {
 
 pub(crate) fn show_money(minor: i64, cur: &str) -> String {
     let sign = if minor < 0 { "-" } else { "" };
-    format!("{sign}{}{}", sym(cur), tracer_api::money::group_digits(minor, cur == "inr"))
+    format!("{sign}{}{}", sym(cur), pebblelab_api::money::group_digits(minor, cur == "inr"))
 }
 
 fn short_date(d: &str) -> String {

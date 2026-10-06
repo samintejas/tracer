@@ -1,4 +1,4 @@
-//! tracer's business logic. Every front end (REST, MCP, CLI) calls these functions and nothing else touches
+//! pebblelab's business logic. Every front end (REST, MCP, CLI) calls these functions and nothing else touches
 //! the database, so a rule lives in exactly one place.
 
 mod accounts;
@@ -8,6 +8,7 @@ mod error;
 mod family;
 mod insights;
 mod notify;
+mod reset;
 mod scheduler;
 mod social;
 mod subscriptions;
@@ -20,10 +21,11 @@ use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub use error::{Error, Result};
+pub use reset::ResetTicket;
 pub use scheduler::JobReport;
 pub use social::{ExternalIdentity, PROVIDERS};
 pub use transactions::INLINE_TYPES;
-pub use tracer_api as api;
+pub use pebblelab_api as api;
 
 /// Settings that change how rules behave. The defaults suit a first run.
 #[derive(Debug, Clone)]
@@ -90,7 +92,7 @@ impl Caller {
 }
 
 /// Where the database is when nothing says otherwise: the one `docker compose up -d` starts.
-pub const DEFAULT_DB: &str = "postgres://tracer:tracer@localhost:5432/tracer";
+pub const DEFAULT_DB: &str = "postgres://pebblelab:pebblelab@localhost:5432/pebblelab";
 
 impl Store {
     /// Connect to Postgres (`postgres://user:pass@host:port/db`) and bring the schema up to date.
@@ -152,11 +154,11 @@ impl Store {
         Ok(())
     }
 
-    /// A store of its own for one test: a fresh schema in the database at `TRACER_TEST_DB` (default: the
+    /// A store of its own for one test: a fresh schema in the database at `PEBBLELAB_TEST_DB` (default: the
     /// compose one). Schemas left by runs more than ten minutes old are dropped on the way.
     pub async fn test() -> Result<Store> {
         use sqlx::Row;
-        let url = std::env::var("TRACER_TEST_DB").unwrap_or_else(|_| DEFAULT_DB.into());
+        let url = std::env::var("PEBBLELAB_TEST_DB").unwrap_or_else(|_| DEFAULT_DB.into());
         let base = PgConnectOptions::from_str(&url).map_err(|e| Error::bad(format!("bad database url: {e}")))?;
         let admin = PgPoolOptions::new()
             .max_connections(1)

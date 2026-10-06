@@ -34,6 +34,7 @@ impl Store {
         .execute(&self.pool)
         .await?
         .rows_affected();
+        n += sqlx::query("DELETE FROM password_resets WHERE created_at < utc_text(now() - interval '1 hour')").execute(&self.pool).await?.rows_affected();
         n += sqlx::query("DELETE FROM notifications WHERE created_at < utc_text(now() - interval '90 days')").execute(&self.pool).await?.rows_affected();
         n += sqlx::query("UPDATE families SET invite_code = NULL, invite_expires = NULL WHERE invite_expires IS NOT NULL AND invite_expires < utc_now()")
             .execute(&self.pool)

@@ -5,17 +5,17 @@
 # It adds to what is there, so run it on an empty database (docker compose down -v && docker compose up -d).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export TRACER_DB="${1:-${TRACER_DB:-postgres://tracer:tracer@localhost:5432/tracer}}" TRACER_PASSWORD='correct horse battery'
-T="${TRACER_BIN:-target/debug/tracer}"
-[ -x "$T" ] || cargo build -q -p tracer
+export PEBBLELAB_DB="${1:-${PEBBLELAB_DB:-postgres://pebblelab:pebblelab@localhost:5432/pebblelab}}" PEBBLELAB_PASSWORD='correct horse battery'
+T="${PEBBLELAB_BIN:-target/debug/pebblelab}"
+[ -x "$T" ] || cargo build -q -p pebblelab
 A=anita@rao.example; V=vikram@rao.example
-a() { TRACER_USER=$A "$T" "$@" >/dev/null; }
-v() { TRACER_USER=$V "$T" "$@" >/dev/null; }
+a() { PEBBLELAB_USER=$A "$T" "$@" >/dev/null; }
+v() { PEBBLELAB_USER=$V "$T" "$@" >/dev/null; }
 d() { date -d "$1" +%F; }                      # d "3 days ago"
 
 "$T" user add "anita rao" $A >/dev/null; "$T" user add "vikram rao" $V >/dev/null
 a family create "rao family"
-CODE=$(TRACER_USER=$A "$T" family invite | sed -n 's/.*: \([A-Z0-9-]\{9\}\)$/\1/p')
+CODE=$(PEBBLELAB_USER=$A "$T" family invite | sed -n 's/.*: \([A-Z0-9-]\{9\}\)$/\1/p')
 v family join "$CODE"
 
 a account add "salary account" --balance 184250 --institution hdfc
@@ -79,4 +79,4 @@ a asset add "apartment, pune" 8200000 --kind property --bought 2019-04 --cost 65
 a asset add car 620000 --kind vehicle --bought 2023-10 --cost 950000
 a asset add "gold, 80 g" 610000 --kind gold --bought 2018-11 --cost 260000
 a asset add laptop 70000 --kind electronics --bought 2024-06 --cost 125000
-echo "demo data in $TRACER_DB. sign in as $A or $V, password: $TRACER_PASSWORD"
+echo "demo data in $PEBBLELAB_DB. sign in as $A or $V, password: $PEBBLELAB_PASSWORD"
