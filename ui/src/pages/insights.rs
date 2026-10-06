@@ -96,6 +96,7 @@ fn Dash(i: Insights, scope_label: String) -> impl IntoView {
         ("bank".to_string(), hold(&|a| a.kind == AccountKind::Bank && !a.joint), "var(--text-strong)", 1.0),
         ("joint".to_string(), hold(&|a| a.kind == AccountKind::Bank && a.joint), "var(--text-strong)", 0.75),
         ("investments".to_string(), hold(&|a| a.kind == AccountKind::Investment), "var(--text-strong)", 0.5),
+        ("assets".to_string(), i.things, "var(--text-strong)", 0.3),
         ("cards, owed".to_string(), hold(&|a| a.kind == AccountKind::Credit), STRIPES, 1.0),
         ("loans, owed".to_string(), hold(&|a| a.kind == AccountKind::Loan), STRIPES, 0.6),
     ]

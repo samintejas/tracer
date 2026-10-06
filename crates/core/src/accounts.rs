@@ -127,11 +127,13 @@ impl Store {
 
     pub async fn accounts(&self, c: &Caller, include_archived: bool) -> Result<Vec<Account>> {
         c.need("read")?;
+        self.post_due(c.user_id).await?;
         self.load_accounts(c.user_id, None, include_archived).await
     }
 
     pub async fn account(&self, c: &Caller, id: i64) -> Result<Account> {
         c.need("read")?;
+        self.post_due(c.user_id).await?;
         self.load_accounts(c.user_id, Some(id), true).await?.into_iter().next().ok_or(Error::NotFound("account"))
     }
 

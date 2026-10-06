@@ -457,6 +457,10 @@ pub struct Insights {
     /// Daily spending from the monday three weeks before this week's, up to today.
     pub days: Vec<DayTotal>,
     pub dues: Vec<Due>,
+    /// What things you own outside your accounts (homes, vehicles, gold) are worth now. Already part of
+    /// `assets`; shown apart so a client can draw it as its own segment.
+    #[serde(default, with = "money::val")]
+    pub things: i64,
     pub loans: Vec<Account>,
     pub investments: Vec<Account>,
     pub accounts: Vec<Account>,
@@ -478,6 +482,138 @@ pub struct Ask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answer {
     pub answer: String,
+}
+
+// ---- subscriptions -------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cycle {
+    #[default]
+    Monthly,
+    Yearly,
+}
+
+impl Cycle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cycle::Monthly => "monthly",
+            Cycle::Yearly => "yearly",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "monthly" => Some(Cycle::Monthly),
+            "yearly" => Some(Cycle::Yearly),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Subscription {
+    pub id: i64,
+    pub name: String,
+    #[serde(with = "money::val")]
+    pub amount: i64,
+    pub cycle: Cycle,
+    /// `YYYY-MM-DD` of the next renewal; none when it was never scheduled.
+    pub next: Option<String>,
+    /// The last renewal that was added to transactions.
+    pub last: Option<String>,
+    /// The account it is paid from.
+    pub account_id: i64,
+    /// The category its transactions get (they are also tagged `subscription`).
+    pub tag: String,
+    /// A paused subscription adds nothing.
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewSubscription {
+    pub name: String,
+    #[serde(with = "money::val")]
+    pub amount: i64,
+    #[serde(default)]
+    pub cycle: Cycle,
+    #[serde(default)]
+    pub next: Option<String>,
+    pub account_id: i64,
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default = "yes")]
+    pub active: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateSubscription {
+    pub name: Option<String>,
+    #[serde(default, with = "money::opt")]
+    pub amount: Option<i64>,
+    pub cycle: Option<Cycle>,
+    /// A date, or an empty string to clear it.
+    pub next: Option<String>,
+    pub account_id: Option<i64>,
+    pub tag: Option<String>,
+    pub active: Option<bool>,
+}
+
+// ---- assets --------------------------------------------------------------------------------------------
+
+pub const ASSET_KINDS: [&str; 5] = ["property", "vehicle", "gold", "electronics", "other"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Asset {
+    pub id: i64,
+    pub name: String,
+    /// One of [`ASSET_KINDS`].
+    pub kind: String,
+    /// `YYYY-MM`, or empty.
+    pub bought: String,
+    /// What was paid for it, zero when unknown.
+    #[serde(with = "money::val")]
+    pub cost: i64,
+    /// What it is worth now.
+    #[serde(with = "money::val")]
+    pub value: i64,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewAsset {
+    pub name: String,
+    #[serde(default = "other_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub bought: String,
+    #[serde(default, with = "money::opt")]
+    pub cost: Option<i64>,
+    #[serde(with = "money::val")]
+    pub value: i64,
+    #[serde(default)]
+    pub note: String,
+}
+
+fn other_kind() -> String {
+    "other".into()
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UpdateAsset {
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub bought: Option<String>,
+    #[serde(default, with = "money::opt")]
+    pub cost: Option<i64>,
+    #[serde(default, with = "money::opt")]
+    pub value: Option<i64>,
+    pub note: Option<String>,
 }
 
 // ---- notifications, connectors -------------------------------------------------------------------------

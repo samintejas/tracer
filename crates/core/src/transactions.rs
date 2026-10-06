@@ -71,6 +71,7 @@ impl Store {
 
     pub async fn transactions(&self, c: &Caller, f: TxFilter) -> Result<TxPage> {
         c.need("transactions")?;
+        self.post_due(c.user_id).await?;
         let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*)");
         Self::push_filter(&mut count, c.user_id, &f);
         let total: i64 = count.build().fetch_one(&self.pool).await?.get(0);

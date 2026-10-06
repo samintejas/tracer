@@ -46,9 +46,29 @@ fn tools() -> Value {
          "transaction_id": id, "amount": amount, "description": s, "tags": tags, "note": s, "date": date, "account_id": id}}},
       {"name": "delete_transaction", "description": "Delete a transaction (both legs if it is a transfer).",
        "inputSchema": {"type": "object", "required": ["transaction_id"], "properties": {"transaction_id": id}}},
+      {"name": "list_subscriptions", "description": format!("List your subscriptions: standing charges on an account. When a renewal date arrives a transaction is added and the date moves on a month or a year. {NOTE}"),
+       "inputSchema": {"type": "object", "properties": {}}},
+      {"name": "add_subscription", "description": format!("Add a subscription paid from an account you own. cycle is monthly or yearly; next is the next renewal date (a past date is added to transactions straight away). tag is the category its transactions get. {NOTE}"),
+       "inputSchema": {"type": "object", "required": ["name", "amount", "account_id"], "properties": {
+         "name": s, "amount": amount, "cycle": {"type": "string", "enum": ["monthly", "yearly"]}, "next": date, "account_id": id, "tag": s, "active": {"type": "boolean"}}}},
+      {"name": "update_subscription", "description": "Change a subscription, pause it (active: false) or resume it. next accepts a date, or an empty string to clear it.",
+       "inputSchema": {"type": "object", "required": ["subscription_id"], "properties": {
+         "subscription_id": id, "name": s, "amount": amount, "cycle": {"type": "string", "enum": ["monthly", "yearly"]}, "next": s, "account_id": id, "tag": s, "active": {"type": "boolean"}}}},
+      {"name": "delete_subscription", "description": "Delete a subscription. Transactions it already added stay.",
+       "inputSchema": {"type": "object", "required": ["subscription_id"], "properties": {"subscription_id": id}}},
+      {"name": "list_assets", "description": format!("List things you own outside your accounts (property, vehicle, gold, electronics, other) with price paid and value now. They count towards assets in insights. {NOTE}"),
+       "inputSchema": {"type": "object", "properties": {}}},
+      {"name": "add_asset", "description": format!("Add something you own. kind is property, vehicle, gold, electronics or other; bought is a month as YYYY-MM; cost is what you paid, value is what it is worth now. {NOTE}"),
+       "inputSchema": {"type": "object", "required": ["name", "value"], "properties": {
+         "name": s, "kind": {"type": "string", "enum": ASSET_KINDS}, "bought": s, "cost": amount, "value": amount, "note": s}}},
+      {"name": "update_asset", "description": "Change an asset, for example its value now.",
+       "inputSchema": {"type": "object", "required": ["asset_id"], "properties": {
+         "asset_id": id, "name": s, "kind": {"type": "string", "enum": ASSET_KINDS}, "bought": s, "cost": amount, "value": amount, "note": s}}},
+      {"name": "delete_asset", "description": "Delete an asset.",
+       "inputSchema": {"type": "object", "required": ["asset_id"], "properties": {"asset_id": id}}},
       {"name": "list_tags", "description": "Tags in use with counts, most used first. Reuse them rather than inventing near-duplicates.",
        "inputSchema": {"type": "object", "properties": {}}},
-      {"name": "get_insights", "description": format!("Money overview: assets, what is owed, income and spending over a window, spending by category, six months of flow, upcoming dues, loans and investments. member_id looks at one person. {NOTE}"),
+      {"name": "get_insights", "description": format!("Money overview: assets (accounts plus things you own), what is owed, income and spending over a window, spending by category, six months of flow, upcoming dues, loans and investments. member_id looks at one person. {NOTE}"),
        "inputSchema": {"type": "object", "properties": {"member_id": id, "days": {"type": "integer", "description": "window for totals, default 30"}}}},
       {"name": "ask_tracer", "description": "Ask a plain question (loans ending, what is due, investments, net worth, spending on a tag) and get an answer computed from the data.",
        "inputSchema": {"type": "object", "required": ["question"], "properties": {"question": s}}}
@@ -65,6 +85,20 @@ struct AccountRef<T> {
 #[derive(Deserialize)]
 struct TxRef<T> {
     transaction_id: i64,
+    #[serde(flatten)]
+    rest: T,
+}
+
+#[derive(Deserialize)]
+struct SubRef<T> {
+    subscription_id: i64,
+    #[serde(flatten)]
+    rest: T,
+}
+
+#[derive(Deserialize)]
+struct AssetRef<T> {
+    asset_id: i64,
     #[serde(flatten)]
     rest: T,
 }
@@ -101,6 +135,28 @@ async fn call_tool(s: &Store, c: &Caller, name: &str, a: Value) -> Result<Value,
         "delete_transaction" => {
             let r: TxRef<serde_json::Map<String, Value>> = args(a)?;
             out(json!({"deleted": s.delete_transaction(c, r.transaction_id).await?}))
+        }
+        "list_subscriptions" => out(s.subscriptions(c).await?),
+        "add_subscription" => out(s.add_subscription(c, args(a)?).await?),
+        "update_subscription" => {
+            let r: SubRef<UpdateSubscription> = args(a)?;
+            out(s.update_subscription(c, r.subscription_id, r.rest).await?)
+        }
+        "delete_subscription" => {
+            let r: SubRef<serde_json::Map<String, Value>> = args(a)?;
+            s.delete_subscription(c, r.subscription_id).await?;
+            out(json!({"deleted": true}))
+        }
+        "list_assets" => out(s.assets(c).await?),
+        "add_asset" => out(s.add_asset(c, args(a)?).await?),
+        "update_asset" => {
+            let r: AssetRef<UpdateAsset> = args(a)?;
+            out(s.update_asset(c, r.asset_id, r.rest).await?)
+        }
+        "delete_asset" => {
+            let r: AssetRef<serde_json::Map<String, Value>> = args(a)?;
+            s.delete_asset(c, r.asset_id).await?;
+            out(json!({"deleted": true}))
         }
         "list_tags" => out(s.tags(c).await?.into_iter().map(|(tag, uses)| json!({"tag": tag, "uses": uses})).collect::<Vec<_>>()),
         "get_insights" => out(s.insights(c, args(a)?).await?),

@@ -55,6 +55,12 @@ pub enum Cmd {
     /// Transactions.
     #[command(subcommand)]
     Tx(TxCmd),
+    /// Subscriptions: standing charges that become transactions on their renewal date.
+    #[command(subcommand, name = "sub")]
+    Sub(SubCmd),
+    /// Things you own outside your accounts: a home, a vehicle, gold.
+    #[command(subcommand)]
+    Asset(AssetCmd),
     /// Net worth, spending, what is due.
     Summary {
         #[arg(long, default_value_t = 30)]
@@ -196,6 +202,61 @@ pub enum TxCmd {
         limit: u32,
     },
     Rm { id: i64 },
+}
+
+#[derive(Subcommand)]
+pub enum SubCmd {
+    /// List subscriptions.
+    List,
+    /// Add one, paid from an account you own.
+    Add {
+        name: String,
+        amount: String,
+        account: String,
+        /// monthly or yearly
+        #[arg(long, default_value = "monthly")]
+        cycle: String,
+        /// Next renewal, YYYY-MM-DD. A past date is added to transactions at once.
+        #[arg(long)]
+        next: Option<String>,
+        /// The category its transactions get.
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    Pause { id: i64 },
+    Resume { id: i64 },
+    #[command(name = "rm")]
+    Delete { id: i64 },
+}
+
+#[derive(Subcommand)]
+pub enum AssetCmd {
+    /// List assets.
+    List,
+    Add {
+        name: String,
+        /// What it is worth now.
+        value: String,
+        /// property, vehicle, gold, electronics or other
+        #[arg(long, default_value = "other")]
+        kind: String,
+        /// Month bought, YYYY-MM
+        #[arg(long)]
+        bought: Option<String>,
+        /// What you paid
+        #[arg(long)]
+        cost: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Set what an asset is worth now.
+    Value { id: i64, value: String },
+    #[command(name = "rm")]
+    Delete { id: i64 },
+}
+
+fn cycle(s: &str) -> Result<Cycle, Error> {
+    Cycle::parse(s).ok_or_else(|| Error::bad("cycle is monthly or yearly"))
 }
 
 fn money(v: i64) -> String {
@@ -451,13 +512,100 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
                 }
             }
         }
+        Cmd::Sub(sc) => {
+            let c = caller(&s, &cli.who).await?;
+            match sc {
+                SubCmd::List => {
+                    let list = s.subscriptions(&c).await?;
+                    if json {
+                        show_json(&list);
+                    } else {
+                        let names: std::collections::HashMap<i64, String> = s.accounts(&c, true).await?.into_iter().map(|a| (a.id, a.name)).collect();
+                        let rows: Vec<Vec<String>> = list
+                            .iter()
+                            .map(|x| {
+                                vec![
+                                    x.id.to_string(),
+                                    x.name.clone(),
+                                    x.cycle.as_str().into(),
+                                    x.next.clone().unwrap_or_else(|| "none".into()),
+                                    names.get(&x.account_id).cloned().unwrap_or_default(),
+                                    if x.active { "active".into() } else { "paused".into() },
+                                    money(x.amount),
+                                ]
+                            })
+                            .collect();
+                        table(&["id", "name", "billed", "next", "paid from", "status", "amount"], &rows, &[0, 6]);
+                    }
+                }
+                SubCmd::Add { name, amount: amt, account: what, cycle: cy, next, tag } => {
+                    let a = account(&s, &c, &what).await?;
+                    let x = s
+                        .add_subscription(&c, NewSubscription { name, amount: amount(&amt)?, cycle: cycle(&cy)?, next, account_id: a.id, tag: tag.unwrap_or_default(), active: true })
+                        .await?;
+                    if json {
+                        show_json(&x);
+                    } else {
+                        println!("#{} {} {} {} from {}, next {}", x.id, x.name, money(x.amount), x.cycle.as_str(), a.name, x.next.as_deref().unwrap_or("none"));
+                    }
+                }
+                SubCmd::Pause { id } => {
+                    s.update_subscription(&c, id, UpdateSubscription { active: Some(false), ..Default::default() }).await?;
+                    println!("paused {id}");
+                }
+                SubCmd::Resume { id } => {
+                    s.update_subscription(&c, id, UpdateSubscription { active: Some(true), ..Default::default() }).await?;
+                    println!("resumed {id}");
+                }
+                SubCmd::Delete { id } => {
+                    s.delete_subscription(&c, id).await?;
+                    println!("deleted {id}");
+                }
+            }
+        }
+        Cmd::Asset(ac) => {
+            let c = caller(&s, &cli.who).await?;
+            match ac {
+                AssetCmd::List => {
+                    let list = s.assets(&c).await?;
+                    if json {
+                        show_json(&list);
+                    } else {
+                        let rows: Vec<Vec<String>> = list
+                            .iter()
+                            .map(|x| vec![x.id.to_string(), x.name.clone(), x.kind.clone(), x.bought.clone(), money(x.cost), money(x.value)])
+                            .collect();
+                        table(&["id", "name", "kind", "bought", "paid", "worth now"], &rows, &[0, 4, 5]);
+                    }
+                }
+                AssetCmd::Add { name, value, kind, bought, cost, note } => {
+                    let x = s
+                        .add_asset(&c, NewAsset { name, kind, bought: bought.unwrap_or_default(), cost: opt_amount(&cost)?, value: amount(&value)?, note: note.unwrap_or_default() })
+                        .await?;
+                    if json {
+                        show_json(&x);
+                    } else {
+                        println!("#{} {} ({}) worth {}", x.id, x.name, x.kind, money(x.value));
+                    }
+                }
+                AssetCmd::Value { id, value } => {
+                    let x = s.update_asset(&c, id, UpdateAsset { value: Some(amount(&value)?), ..Default::default() }).await?;
+                    println!("{} is now worth {}", x.name, money(x.value));
+                }
+                AssetCmd::Delete { id } => {
+                    s.delete_asset(&c, id).await?;
+                    println!("deleted {id}");
+                }
+            }
+        }
         Cmd::Summary { days } => {
             let c = caller(&s, &cli.who).await?;
             let i = s.insights(&c, InsightsQuery { member_id: None, days: Some(days) }).await?;
             if json {
                 show_json(&i);
             } else {
-                println!("assets   {}\nowed     {}\nworth    {}\n", money(i.assets), money(i.owed), money(i.assets - i.owed));
+                let things = if i.things > 0 { format!(" (things you own: {})", money(i.things)) } else { String::new() };
+                println!("assets   {}{things}\nowed     {}\nworth    {}\n", money(i.assets), money(i.owed), money(i.assets - i.owed));
                 println!("last {days} days: income {}, spending {}", money(i.income), money(i.spending));
                 for c in i.categories.iter().take(8) {
                     println!("  {:<14}{:>12}", c.tag, money(c.total));

@@ -45,6 +45,10 @@ tracer account add "home loan" --kind loan --total 2500000 --rate 8.5 --tenure 1
 tracer tx add salary 3240 groceries, weekly --tag groceries,household
 tracer tx transfer salary "card, anita" 20000
 tracer tx list --tag groceries
+tracer sub add "streaming video" 649 "card, anita" --tag entertainment --next 2026-11-12   # renewals become transactions
+tracer sub list
+tracer asset add "apartment, pune" 8200000 --kind property --bought 2019-04 --cost 6500000
+tracer asset value 1 8400000                # what it is worth now
 tracer summary
 tracer ask "when do my loans end?"
 tracer family create "rao family"
@@ -58,13 +62,14 @@ tracer token create claude --scopes read,transactions,add
 at `POST /api/auth/signin` for a session token, or create a connector token (profile, connectors).
 Routes: `auth/{signup,signin,signout,signout-all,reset}`, `me` (also delete), `me/password`, `export.csv`,
 `family` (create, delete), `family/{invite,join,leave}`, `accounts`, `transactions` (filter, sort, page, in/out
-totals), `transfers`, `transactions/{id}/attachments`, `tags`, `insights`, `ask`, `notifications`, `connectors`.
+totals), `transfers`, `transactions/{id}/attachments`, `subscriptions`, `assets`, `tags`, `insights`, `ask`, `notifications`, `connectors`.
 
 ## mcp
 
 `POST /mcp` (streamable HTTP, bearer token) or `tracer mcp` on stdio (`TRACER_TOKEN`, and `TRACER_DB` if not the default).
 Tools: `list_accounts`, `create_account`, `update_account`, `list_transactions`, `add_transaction`,
-`transfer_money`, `update_transaction`, `delete_transaction`, `list_tags`, `get_insights`, `ask_tracer`.
+`transfer_money`, `update_transaction`, `delete_transaction`, `list_subscriptions`, `add_subscription`, `update_subscription`, `delete_subscription`, `list_assets`, `add_asset`,
+`update_asset`, `delete_asset`, `list_tags`, `get_insights`, `ask_tracer`.
 A token has scopes: `read`, `transactions` (read them), `add`, `edit`; a tool outside them reports the missing scope.
 
 ## model
@@ -75,6 +80,13 @@ A token has scopes: `read`, `transactions` (read them), `add`, `edit`; a tool ou
   owned by several family members, who all see it and add to it.
   Only owners change an account or add to it.
 - A transfer is two linked transactions, edited and deleted together.
+- A subscription is a monthly or yearly charge on an account you own. When its renewal date arrives a debit is
+  added (tagged with its category and `subscription`) and the date moves on. This happens when anything that
+  depends on balances is read, once per renewal, and a paused subscription adds nothing. Subscriptions are yours
+  alone.
+- An asset is something you own outside any account (property, vehicle, gold, electronics): the price paid and
+  what it is worth now, which you keep up to date. It counts towards assets and net worth in insights, in your
+  own and the family view, never in another member's. Assets are yours alone.
 
 ## test
 

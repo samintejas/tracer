@@ -4,6 +4,13 @@ use tracer_api::*;
 
 use crate::api;
 
+/// What the side panel holds besides a transaction. `None` inside is a new one.
+#[derive(Clone)]
+pub enum Side {
+    Sub(Option<Subscription>),
+    Asset(Option<Asset>),
+}
+
 /// What every page shares. Pages refetch their own data when `rev` changes; `reload` refreshes the shared
 /// parts (who you are, your accounts, tag suggestions, notifications) and bumps it.
 #[derive(Clone, Copy)]
@@ -15,6 +22,8 @@ pub struct AppState {
     pub rev: RwSignal<u32>,
     /// The transaction open in the side panel.
     pub panel: RwSignal<Option<Transaction>>,
+    /// The subscription or asset open in the side panel.
+    pub side: RwSignal<Option<Side>>,
     pub toasts: Toasts,
 }
 
@@ -27,6 +36,7 @@ impl AppState {
             notes: RwSignal::new(Vec::new()),
             rev: RwSignal::new(0),
             panel: RwSignal::new(None),
+            side: RwSignal::new(None),
             toasts: use_toasts(),
         }
     }

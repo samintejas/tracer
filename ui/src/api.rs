@@ -152,6 +152,14 @@ pub async fn tags() -> Result<Vec<String>, ApiError> {
     Ok(get::<Vec<T>>("/tags").await?.into_iter().map(|t| t.tag).collect())
 }
 
+pub async fn subscriptions() -> Result<Vec<Subscription>, ApiError> {
+    get("/subscriptions").await
+}
+
+pub async fn assets() -> Result<Vec<Asset>, ApiError> {
+    get("/assets").await
+}
+
 pub async fn notifications() -> Result<Vec<Notification>, ApiError> {
     get("/notifications").await
 }

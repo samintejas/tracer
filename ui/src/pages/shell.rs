@@ -6,7 +6,8 @@ use leptos_router::hooks::{use_location, use_navigate};
 use crate::api;
 use crate::icons::*;
 use crate::pages::transactions::TxPanel;
-use crate::state::AppState;
+use crate::pages::{AssetPanel, SubPanel};
+use crate::state::{AppState, Side};
 
 /// `/accounts/3` and `settings/family` style links from a notification.
 fn link_path(link: &str) -> Option<String> {
@@ -46,15 +47,24 @@ pub fn AppShell() -> impl IntoView {
         });
     }
     let shell = ShellState::new();
-    // the side panel is open exactly while a transaction is
-    Effect::new(move |_| shell.set(Region::Right, app.panel.get().is_some()));
+    // the side panel is open exactly while a transaction, subscription or asset is
+    Effect::new(move |_| shell.set(Region::Right, app.panel.get().is_some() || app.side.get().is_some()));
 
     let path = use_location().pathname;
     let page = Memo::new(move |_| path.get().trim_start_matches('/').split('/').next().unwrap_or("").to_string());
-    // leaving the transactions screen closes its panel
+    // leaving a screen closes its panel
     Effect::new(move |_| {
-        if page.get() != "transactions" {
+        let p = page.get();
+        if p != "transactions" {
             app.panel.set(None);
+        }
+        let keep = app.side.with_untracked(|s| match s {
+            Some(Side::Sub(_)) => p == "subscriptions",
+            Some(Side::Asset(_)) => p == "assets",
+            None => true,
+        });
+        if !keep {
+            app.side.set(None);
         }
     });
     let crumb = move || {
@@ -112,6 +122,10 @@ pub fn AppShell() -> impl IntoView {
                         <SidebarItem href="/insights" icon="layout-dashboard" label="insights" current=Signal::derive(move || page.get() == "insights")/>
                         {move || view! { <SidebarItem href="/accounts" icon="wallet" label="accounts" current=Signal::derive(move || page.get() == "accounts") count=acct_count().to_string()/> }}
                     </SidebarGroup>
+                    <SidebarGroup label="track">
+                        <TrackItem href="/subscriptions" icon=REPEAT label="subscriptions" current=Signal::derive(move || page.get() == "subscriptions")/>
+                        <TrackItem href="/assets" icon=PACKAGE label="assets" current=Signal::derive(move || page.get() == "assets")/>
+                    </SidebarGroup>
                 </SidebarContent>
                 <SidebarFoot>
                     <Menu
@@ -152,10 +166,28 @@ pub fn AppShell() -> impl IntoView {
                 </AppBar>
                 <Main><div class="page"><Outlet/></div></Main>
             </ShellMain>
-            <aside class="d-rightbar" aria-label="details" inert=move || app.panel.get().is_none()>
+            <aside class="d-rightbar" aria-label="details" inert=move || app.panel.get().is_none() && app.side.get().is_none()>
                 {move || app.panel.get().map(|t| view! { <TxPanel t=t/> })}
+                {move || app.side.get().map(|s| match s {
+                    Side::Sub(x) => view! { <SubPanel sub=x/> }.into_any(),
+                    Side::Asset(x) => view! { <AssetPanel asset=x/> }.into_any(),
+                })}
             </aside>
         </Shell>
+    }
+}
+
+/// A sidebar row for the screens whose icon is not in the bundled set: the same markup as `SidebarItem`.
+#[component]
+fn TrackItem(href: &'static str, icon: &'static str, label: &'static str, #[prop(into)] current: Signal<bool>) -> impl IntoView {
+    let shell = use_shell();
+    view! {
+        <li class="d-sidebar__item">
+            <a class="d-sidebar__btn" href=href aria-current=move || current.get().then_some("page") data-tooltip=move || shell.icon_rail().then_some(label)>
+                <Ico d=icon/>
+                <span class="d-sidebar__label">{label}</span>
+            </a>
+        </li>
     }
 }
 

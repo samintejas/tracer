@@ -65,4 +65,18 @@ a tx add "household joint" 999 internet --tag utilities --date "$(d "10 days ago
 v tx add "household joint" 2870 groceries, weekly --tag groceries,household --date "$(d "11 days ago")"
 v tx add "card, vikram" 1450 train tickets --tag transport --date "$(d "13 days ago")"
 a tx transfer "salary account" "emergency fund" 20000 --date "$(d "15 days ago")"
+
+# things that renew, and things owned outside the accounts
+a sub add "streaming video" 649 "card, anita" --tag entertainment --next "$(d "+7 days")"
+a sub add music 119 "card, anita" --tag entertainment --next "$(d "+13 days")"
+a sub add "cloud storage" 130 "card, anita" --tag utilities --next "$(d "+16 days")"
+a sub add "home broadband" 999 "salary account" --tag utilities --next "$(d today)"
+a sub add "gym membership" 14000 "salary account" --cycle yearly --tag health --next "$(d "+3 months")"
+a sub add "domain renewal" 1200 "card, anita" --cycle yearly --tag other --next "$(d "+8 weeks")"
+a sub add newspaper 250 "salary account" --tag other
+a sub pause "$("$T" --as $A --json sub list | python3 -c 'import json,sys; print([s["id"] for s in json.load(sys.stdin) if s["name"]=="newspaper"][0])')"
+a asset add "apartment, pune" 8200000 --kind property --bought 2019-04 --cost 6500000
+a asset add car 620000 --kind vehicle --bought 2023-10 --cost 950000
+a asset add "gold, 80 g" 610000 --kind gold --bought 2018-11 --cost 260000
+a asset add laptop 70000 --kind electronics --bought 2024-06 --cost 125000
 echo "demo data in $TRACER_DB. sign in as $A or $V, password: $TRACER_PASSWORD"

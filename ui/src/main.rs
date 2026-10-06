@@ -29,6 +29,8 @@ fn App() -> impl IntoView {
                     <ParentRoute path=path!("") view=pages::AppShell>
                         <Route path=path!("transactions") view=pages::Transactions/>
                         <Route path=path!("insights") view=pages::Insights/>
+                        <Route path=path!("subscriptions") view=pages::Subscriptions/>
+                        <Route path=path!("assets") view=pages::Assets/>
                         <Route path=path!("accounts") view=pages::Accounts/>
                         <Route path=path!("accounts/new") view=pages::NewAccount/>
                         <Route path=path!("accounts/:id") view=pages::AccountPage/>

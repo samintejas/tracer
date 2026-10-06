@@ -246,3 +246,85 @@ async fn profile_sessions_and_deleting_yourself() {
     s.delete_user(&c, "correct horse battery").await.unwrap();
     assert!(matches!(s.sign_in(SignIn { email: "a@x.example".into(), password: "correct horse battery".into() }).await, Err(Error::Unauthorized)));
 }
+
+#[tokio::test]
+async fn subscriptions_post_their_renewals_once() {
+    let s = Store::test().await.unwrap();
+    let (c, _) = user(&s, "anita").await;
+    let bank = s.create_account(&c, acct("salary", AccountKind::Bank, 10_000_00)).await.unwrap();
+    let today = chrono::Local::now().date_naive();
+    let ago = |m: u32| (today - chrono::Months::new(m)).to_string();
+
+    // two monthly renewals have passed (the one two months ago and the one a month ago), plus today's
+    let sub = s
+        .add_subscription(&c, NewSubscription { name: "Streaming".into(), amount: 649_00, cycle: Cycle::Monthly, next: Some(ago(2)), account_id: bank.id, tag: "Entertainment".into(), active: true })
+        .await
+        .unwrap();
+    assert_eq!(sub.name, "streaming");
+    let page = s.transactions(&c, TxFilter { tags: Some("subscription".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(page.total, 3, "{page:?}");
+    assert!(page.items.iter().all(|t| t.tags == ["entertainment", "subscription"] && t.amount == -649_00));
+    assert_eq!(s.account(&c, bank.id).await.unwrap().balance, 10_000_00 - 3 * 649_00);
+    // the date moved past today, and reading again adds nothing
+    let list = s.subscriptions(&c).await.unwrap();
+    assert!(list[0].next.as_deref().unwrap() > today.to_string().as_str());
+    assert!(list[0].last.as_deref().is_some_and(|l| l <= today.to_string().as_str()), "the last renewal is remembered");
+    assert_eq!(s.transactions(&c, TxFilter { tags: Some("subscription".into()), ..Default::default() }).await.unwrap().total, 3);
+
+    // a paused one adds nothing, and resuming catches up
+    let paused = s
+        .add_subscription(&c, NewSubscription { name: "gym".into(), amount: 14_000_00, cycle: Cycle::Yearly, next: Some(ago(1)), account_id: bank.id, tag: String::new(), active: false })
+        .await
+        .unwrap();
+    assert_eq!(s.transactions(&c, TxFilter { tags: Some("subscription".into()), ..Default::default() }).await.unwrap().total, 3);
+    s.update_subscription(&c, paused.id, UpdateSubscription { active: Some(true), ..Default::default() }).await.unwrap();
+    let all = s.transactions(&c, TxFilter { tags: Some("subscription".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(all.total, 4);
+    let yearly = s.subscriptions(&c).await.unwrap().into_iter().find(|x| x.id == paused.id).unwrap();
+    assert!(yearly.next.unwrap() > today.to_string(), "a yearly renewal moves a year on");
+
+    // rules
+    assert!(s.add_subscription(&c, NewSubscription { name: " ".into(), amount: 1, cycle: Cycle::Monthly, next: None, account_id: bank.id, tag: String::new(), active: true }).await.is_err());
+    assert!(s.add_subscription(&c, NewSubscription { name: "x".into(), amount: 1, cycle: Cycle::Monthly, next: Some("soon".into()), account_id: bank.id, tag: String::new(), active: true }).await.is_err());
+    let (other, _) = user(&s, "vikram").await;
+    assert!(s.add_subscription(&other, NewSubscription { name: "x".into(), amount: 1, cycle: Cycle::Monthly, next: None, account_id: bank.id, tag: String::new(), active: true }).await.is_err(), "not their account");
+    assert!(s.subscriptions(&other).await.unwrap().is_empty());
+    assert!(matches!(s.delete_subscription(&other, sub.id).await, Err(Error::NotFound(_))));
+    s.update_subscription(&c, sub.id, UpdateSubscription { next: Some(String::new()), ..Default::default() }).await.unwrap();
+    assert!(s.subscriptions(&c).await.unwrap().iter().find(|x| x.id == sub.id).unwrap().next.is_none());
+    s.delete_subscription(&c, sub.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn assets_count_towards_net_worth() {
+    let s = Store::test().await.unwrap();
+    let (c, _) = user(&s, "anita").await;
+    s.create_account(&c, acct("salary", AccountKind::Bank, 1_000_00)).await.unwrap();
+    s.create_account(&c, acct("card", AccountKind::Credit, 200_00)).await.unwrap();
+    let flat = s
+        .add_asset(&c, NewAsset { name: "Apartment".into(), kind: "property".into(), bought: "2019-04".into(), cost: Some(65_000_00), value: 82_000_00, note: String::new() })
+        .await
+        .unwrap();
+    s.add_asset(&c, NewAsset { name: "laptop".into(), kind: "electronics".into(), bought: String::new(), cost: None, value: 700_00, note: "work".into() }).await.unwrap();
+    assert_eq!(flat.name, "apartment");
+    let list = s.assets(&c).await.unwrap();
+    assert_eq!(list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["apartment", "laptop"], "biggest first");
+
+    let ins = s.insights(&c, InsightsQuery::default()).await.unwrap();
+    assert_eq!((ins.things, ins.assets, ins.owed), (82_700_00, 83_700_00, 200_00));
+    let me = s.me(&c).await.unwrap().user.id;
+    assert_eq!(s.insights(&c, InsightsQuery { member_id: Some(me), days: None }).await.unwrap().things, 82_700_00);
+    assert!(s.ask(&c, "what are my assets worth?").await.unwrap().contains("2 assets"));
+
+    s.update_asset(&c, flat.id, UpdateAsset { value: Some(90_000_00), ..Default::default() }).await.unwrap();
+    assert_eq!(s.insights(&c, InsightsQuery::default()).await.unwrap().things, 90_700_00);
+
+    assert!(s.add_asset(&c, NewAsset { name: "x".into(), kind: "boat".into(), bought: String::new(), cost: None, value: 1, note: String::new() }).await.is_err());
+    assert!(s.add_asset(&c, NewAsset { name: "x".into(), kind: "other".into(), bought: "last year".into(), cost: None, value: 1, note: String::new() }).await.is_err());
+    let (other, _) = user(&s, "vikram").await;
+    assert!(s.assets(&other).await.unwrap().is_empty());
+    assert_eq!(s.insights(&other, InsightsQuery::default()).await.unwrap().things, 0);
+    assert!(matches!(s.update_asset(&other, flat.id, UpdateAsset::default()).await, Err(Error::NotFound(_))));
+    s.delete_asset(&c, flat.id).await.unwrap();
+    assert_eq!(s.assets(&c).await.unwrap().len(), 1);
+}

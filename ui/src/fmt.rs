@@ -74,3 +74,26 @@ pub fn ordinal(n: u32) -> String {
 pub fn pct(part: i64, whole: i64) -> String {
     if whole == 0 { "0%".into() } else { format!("{}%", ((part as f64) / (whole as f64) * 100.0).round() as i64) }
 }
+
+/// `5 oct`, with the year when it is not this year: `5 jan 2027`.
+pub fn day_label(date: &str) -> String {
+    const M: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let parts = (date.get(..4), date.get(5..7).and_then(|m| m.parse::<usize>().ok()), date.get(8..10).and_then(|d| d.parse::<u32>().ok()));
+    match parts {
+        (Some(y), Some(m), Some(d)) if (1..=12).contains(&m) => {
+            if today().starts_with(y) { format!("{d} {}", M[m - 1]) } else { format!("{d} {} {y}", M[m - 1]) }
+        }
+        _ => date.to_string(),
+    }
+}
+
+/// `YYYY-MM-DD` today plus that many months, on the last day of the month when it has no such day.
+pub fn in_months(n: u32) -> String {
+    let d = js_sys::Date::new_0();
+    let day = d.get_date();
+    d.set_date(1);
+    d.set_month(d.get_month() + n);
+    let last = js_sys::Date::new_with_year_month_day(d.get_full_year(), d.get_month() as i32 + 1, 0).get_date();
+    d.set_date(day.min(last));
+    format!("{:04}-{:02}-{:02}", d.get_full_year(), d.get_month() + 1, d.get_date())
+}

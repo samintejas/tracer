@@ -77,7 +77,10 @@ impl Store {
         if let Some(m) = q.member_id {
             accounts.retain(|a| a.owners.iter().any(|o| o.id == m));
         }
-        let assets = accounts.iter().filter(|a| !a.kind.is_liability()).map(|a| a.balance).sum();
+        // things you own are yours alone: they count in the family view and in yours, not in another member's
+        let things = if q.member_id.is_none_or(|m| m == c.user_id) { self.things_value(c.user_id).await? } else { 0 };
+        let held: i64 = accounts.iter().filter(|a| !a.kind.is_liability()).map(|a| a.balance).sum();
+        let assets = held + things;
         let owed = accounts.iter().filter(|a| a.kind.is_liability()).map(|a| a.balance).sum();
 
         let first_month = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap() - Duration::days(1);
@@ -152,6 +155,7 @@ impl Store {
             months,
             days,
             dues,
+            things,
             loans: accounts.iter().filter(|a| a.loan.is_some()).cloned().collect(),
             investments: accounts.iter().filter(|a| a.kind == AccountKind::Investment).cloned().collect(),
             accounts,
@@ -200,6 +204,30 @@ impl Store {
                 fmt((now - put).abs())
             ));
         }
+        if has(&["subscription", "renew"]) {
+            let subs: Vec<Subscription> = self.subscriptions(c).await?.into_iter().filter(|s| s.active).collect();
+            if subs.is_empty() {
+                return Ok("you have no active subscriptions.".into());
+            }
+            let monthly: i64 = subs.iter().map(|s| if s.cycle == Cycle::Yearly { s.amount / 12 } else { s.amount }).sum();
+            let mut lines = vec![format!("{} active subscriptions, about {} a month ({} a year).", subs.len(), fmt(monthly), fmt(monthly * 12))];
+            if let Some(n) = subs.iter().filter(|s| s.next.is_some()).min_by(|a, b| a.next.cmp(&b.next)) {
+                lines.push(format!("next renewal: {} on {}, {}.", n.name, n.next.clone().unwrap_or_default(), fmt(n.amount)));
+            }
+            return Ok(lines.join("\n"));
+        }
+        if has(&["asset", "property", "gold", "vehicle"]) {
+            let things = self.assets(c).await?;
+            if things.is_empty() {
+                return Ok("you have not added any assets.".into());
+            }
+            let (value, cost): (i64, i64) = things.iter().fold((0, 0), |(v, c), a| (v + a.value, c + a.cost));
+            let mut lines = vec![format!("{} assets worth {} now.", things.len(), fmt(value))];
+            if cost > 0 {
+                lines.push(format!("you paid {}, so they are {} {}.", fmt(cost), if value >= cost { "up" } else { "down" }, fmt((value - cost).abs())));
+            }
+            return Ok(lines.join("\n"));
+        }
         if has(&["net worth", "worth", "how much do i have", "total"]) {
             return Ok(format!("you hold {} and owe {}, so you are worth {}.", fmt(ins.assets), fmt(ins.owed), fmt(ins.assets - ins.owed)));
         }
@@ -224,6 +252,6 @@ impl Store {
         if has(&["earn", "income", "salary"]) {
             return Ok(format!("you received {} in the last 30 days.", fmt(ins.income)));
         }
-        Ok("i can answer questions about loans, what is due, investments, net worth, and spending by tag, from your own transactions. try: when do my loans end?".into())
+        Ok("i can answer questions about loans, what is due, investments, subscriptions, assets, net worth, and spending by tag, from your own transactions. try: when do my loans end?".into())
     }
 }

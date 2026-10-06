@@ -2,11 +2,13 @@
 //! the database, so a rule lives in exactly one place.
 
 mod accounts;
+mod assets;
 mod auth;
 mod error;
 mod family;
 mod insights;
 mod notify;
+mod subscriptions;
 mod transactions;
 
 use std::str::FromStr;

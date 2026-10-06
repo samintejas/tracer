@@ -80,6 +80,10 @@ pub fn router(store: Store, ui_dir: PathBuf) -> Router {
         .route("/transactions/{id}/attachments", post(add_attachment))
         .route("/attachments/{id}", get(attachment).delete(delete_attachment))
         .route("/transfers", post(transfer))
+        .route("/subscriptions", get(subscriptions).post(add_subscription))
+        .route("/subscriptions/{id}", axum::routing::patch(update_subscription).delete(delete_subscription))
+        .route("/assets", get(assets).post(add_asset))
+        .route("/assets/{id}", axum::routing::patch(update_asset).delete(delete_asset))
         .route("/tags", get(tags))
         .route("/insights", get(insights))
         .route("/ask", post(ask))
@@ -316,5 +320,39 @@ async fn create_connector(State(s): State<Store>, Auth(c, _): Auth, Json(b): Jso
 
 async fn revoke_connector(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>) -> R<Value> {
     s.revoke_connector(&c, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn subscriptions(State(s): State<Store>, Auth(c, _): Auth) -> R<Vec<Subscription>> {
+    Ok(Json(s.subscriptions(&c).await?))
+}
+
+async fn add_subscription(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<NewSubscription>) -> R<Subscription> {
+    Ok(Json(s.add_subscription(&c, b).await?))
+}
+
+async fn update_subscription(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>, Json(b): Json<UpdateSubscription>) -> R<Subscription> {
+    Ok(Json(s.update_subscription(&c, id, b).await?))
+}
+
+async fn delete_subscription(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>) -> R<Value> {
+    s.delete_subscription(&c, id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn assets(State(s): State<Store>, Auth(c, _): Auth) -> R<Vec<Asset>> {
+    Ok(Json(s.assets(&c).await?))
+}
+
+async fn add_asset(State(s): State<Store>, Auth(c, _): Auth, Json(b): Json<NewAsset>) -> R<Asset> {
+    Ok(Json(s.add_asset(&c, b).await?))
+}
+
+async fn update_asset(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>, Json(b): Json<UpdateAsset>) -> R<Asset> {
+    Ok(Json(s.update_asset(&c, id, b).await?))
+}
+
+async fn delete_asset(State(s): State<Store>, Auth(c, _): Auth, Path(id): Path<i64>) -> R<Value> {
+    s.delete_asset(&c, id).await?;
     Ok(Json(json!({ "ok": true })))
 }
