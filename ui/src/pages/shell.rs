@@ -1,4 +1,4 @@
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::components::Outlet;
 use leptos_router::hooks::{use_location, use_navigate};

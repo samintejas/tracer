@@ -10,6 +10,8 @@ pub enum Error {
     BadRequest(String),
     Conflict(String),
     Internal(String),
+    /// Too many tries; wait and try again.
+    Limited(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -23,7 +25,7 @@ impl Error {
         match self {
             Error::Unauthorized => "not signed in".into(),
             Error::NotFound(what) => format!("{what} not found"),
-            Error::Forbidden(m) | Error::BadRequest(m) | Error::Conflict(m) | Error::Internal(m) => m.clone(),
+            Error::Forbidden(m) | Error::BadRequest(m) | Error::Conflict(m) | Error::Internal(m) | Error::Limited(m) => m.clone(),
         }
     }
 }

@@ -114,27 +114,53 @@ pub async fn upload(path: &str, mime: &str, bytes: js_sys::Uint8Array) -> Result
     finish(req.send().await.map_err(net)?).await
 }
 
-/// Fetch an attachment with the token and open it in a new tab.
-pub async fn open_attachment(id: i64) -> Result<(), ApiError> {
+/// What the browser may show in place. Everything else is only ever saved to disk: the server sends
+/// the same list, and an opened blob runs as part of this app, so a page or script must never be shown.
+const SHOWN_IN_PLACE: [&str; 5] = ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"];
+
+/// Fetch an attachment with the token: pictures and pdfs open in a new tab, anything else is saved.
+pub async fn open_attachment(id: i64, name: &str) -> Result<(), ApiError> {
+    use wasm_bindgen::JsCast;
+    let fail = || ApiError { status: 0, message: "could not open the file".into() };
     let res = auth(Request::get(&format!("/api/attachments/{id}"))).send().await.map_err(net)?;
     if !res.ok() {
         return Err(ApiError { status: res.status(), message: "could not open the file".into() });
     }
-    let blob = res.binary().await.map_err(net)?;
-    let bytes = js_sys::Uint8Array::from(blob.as_slice());
-    let parts = js_sys::Array::of1(&bytes);
-    let mime = res.headers().get("content-type").unwrap_or_default();
+    let bytes = res.binary().await.map_err(net)?;
+    let mime = res.headers().get("content-type").unwrap_or_default().split(';').next().unwrap_or("").trim().to_lowercase();
+    let show = SHOWN_IN_PLACE.contains(&mime.as_str());
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes.as_slice()));
     let opts = web_sys::BlobPropertyBag::new();
-    opts.set_type(&mime);
-    let b = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(|_| ApiError { status: 0, message: "could not open the file".into() })?;
-    let url = web_sys::Url::create_object_url_with_blob(&b).map_err(|_| ApiError { status: 0, message: "could not open the file".into() })?;
-    if let Some(w) = web_sys::window() {
-        let _ = w.open_with_url_and_target(&url, "_blank");
+    opts.set_type(if show { &mime } else { "application/octet-stream" });
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(|_| fail())?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| fail())?;
+    if show {
+        if let Some(w) = web_sys::window() {
+            let _ = w.open_with_url_and_target(&url, "_blank");
+        }
+    } else {
+        let doc = web_sys::window().and_then(|w| w.document()).ok_or_else(fail)?;
+        let a: web_sys::HtmlAnchorElement = doc.create_element("a").map_err(|_| fail())?.dyn_into().map_err(|_| fail())?;
+        a.set_href(&url);
+        a.set_download(name);
+        a.click();
+        let _ = web_sys::Url::revoke_object_url(&url);
     }
     Ok(())
 }
 
 // ---- typed calls ---------------------------------------------------------------------------------------
+
+/// Which providers people can sign in with here.
+pub async fn providers() -> Vec<String> {
+    get("/auth/providers").await.unwrap_or_default()
+}
+
+/// What follows the `#` in the address, decoded as `a=b&c=d`.
+pub fn hash_params() -> std::collections::HashMap<String, String> {
+    let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
+    serde_urlencoded::from_str(hash.trim_start_matches('#')).unwrap_or_default()
+}
 
 pub async fn me() -> Result<Me, ApiError> {
     get("/me").await

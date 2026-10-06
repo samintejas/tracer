@@ -19,6 +19,15 @@ pub struct Cli {
     /// Print JSON instead of a table.
     #[arg(long, global = true)]
     pub json: bool,
+    /// Whose clock "today" follows, e.g. Asia/Kolkata. Dates left blank, renewals and reminders use it.
+    #[arg(long, global = true, env = "TRACER_TZ", default_value = "UTC")]
+    pub tz: String,
+    /// Let anyone create an account (`open`), or only the CLI (`closed`).
+    #[arg(long, global = true, env = "TRACER_SIGNUPS", default_value = "open", value_parser = ["open", "closed"])]
+    pub signups: String,
+    /// How many database connections the server may hold.
+    #[arg(long, global = true, env = "TRACER_DB_POOL", default_value_t = 16)]
+    pub db_pool: u32,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
@@ -32,7 +41,30 @@ pub enum Cmd {
         /// The built web app.
         #[arg(long, env = "TRACER_UI_DIR", default_value = "ui/dist")]
         ui_dir: String,
+        /// The server sits behind a reverse proxy that sets X-Forwarded-For: take the client address from it.
+        #[arg(long, env = "TRACER_TRUST_PROXY")]
+        trust_proxy: bool,
+        /// The address people reach this server at, e.g. https://tracer.example.com. Google and GitHub send
+        /// them back to `<it>/api/auth/<provider>/callback`.
+        #[arg(long, env = "TRACER_PUBLIC_URL", default_value = "http://127.0.0.1:3000")]
+        public_url: String,
+        /// Sign in with Google: the OAuth client id and secret from the Google Cloud console.
+        #[arg(long, env = "TRACER_GOOGLE_CLIENT_ID")]
+        google_client_id: Option<String>,
+        #[arg(long, env = "TRACER_GOOGLE_CLIENT_SECRET", hide_env_values = true)]
+        google_client_secret: Option<String>,
+        /// Sign in with GitHub: an OAuth app's client id and secret.
+        #[arg(long, env = "TRACER_GITHUB_CLIENT_ID")]
+        github_client_id: Option<String>,
+        #[arg(long, env = "TRACER_GITHUB_CLIENT_SECRET", hide_env_values = true)]
+        github_client_secret: Option<String>,
+        /// Seconds between background runs (renewals, reminders, tidying). 0 turns them off.
+        #[arg(long, env = "TRACER_JOB_SECS", default_value_t = 900)]
+        job_secs: u64,
     },
+    /// Run the background work once (renewals, reminders, tidying) and exit. For a cron job when the
+    /// server's own schedule is off.
+    Jobs,
     /// Run an MCP server on stdio, for Claude Desktop and other local clients.
     Mcp,
     /// People.
@@ -149,9 +181,21 @@ pub struct NewAcct {
     /// loan: day of month the emi leaves
     #[arg(long)]
     pub emi_day: Option<u32>,
-    /// investment: amount put in
+    /// investment: amount put in (a fixed deposit's lump sum)
     #[arg(long)]
     pub invested: Option<String>,
+    /// investment: mutual fund, stocks, etf, bonds, crypto, fixed deposit, recurring deposit, ppf, epf, nps, gold, real estate or other
+    #[arg(long = "type")]
+    pub invest_type: Option<String>,
+    /// investment: monthly sip, deposit or contribution
+    #[arg(long)]
+    pub sip: Option<String>,
+    /// investment: day of month the sip leaves
+    #[arg(long)]
+    pub sip_day: Option<u32>,
+    /// investment: id of one of your assets this stands for (gold, real estate, other); its value is the value
+    #[arg(long)]
+    pub asset: Option<i64>,
 }
 
 #[derive(Subcommand)]
@@ -334,8 +378,12 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
     let json = cli.json;
     match cli.cmd {
         Cmd::Serve { .. } | Cmd::Mcp => unreachable!("handled in main"),
+        Cmd::Jobs => {
+            let r = s.run_jobs().await?;
+            println!("{} renewals posted, {} reminders made, {} expired rows removed", r.renewals, r.reminders, r.pruned);
+        }
         Cmd::User(UserCmd::Add { name, email, password }) => {
-            let sess = s.sign_up(SignUp { name, email, password }).await?;
+            let sess = s.create_user(SignUp { name, email, password }).await?;
             println!("created {} <{}> (id {})", sess.user.name, sess.user.email, sess.user.id);
             // the sign-up opened a web session: this CLI has no use for it
             s.sign_out(&sess.token).await?;
@@ -420,6 +468,7 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
                         .create_account(&c, NewAccount {
                             name: n.name,
                             kind: AccountKind::parse(&n.kind).unwrap(),
+                            asset_id: n.asset,
                             balance: opt_amount(&n.balance)?,
                             visibility: if n.shared { Visibility::Shared } else { Visibility::Private },
                             owner_ids,
@@ -433,7 +482,9 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
                                 start: n.start,
                                 emi_day: n.emi_day,
                                 invested: opt_amount(&n.invested)?,
-                                sip_day: None,
+                                invest_kind: n.invest_type.unwrap_or_default(),
+                                sip: opt_amount(&n.sip)?,
+                                sip_day: n.sip_day,
                                 ..Default::default()
                             },
                         })

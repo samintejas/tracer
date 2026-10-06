@@ -2,7 +2,7 @@ use chrono::{Datelike, Months, NaiveDate};
 use sqlx::Row;
 
 use crate::api::*;
-use crate::{Caller, Error, Result, Store, clean, tags as norm_tags, today};
+use crate::{Caller, Error, Result, Store, clean, tags as norm_tags};
 
 /// Renewals added in one go when a subscription was left unvisited for a long time; the rest follow on
 /// the next read.
@@ -46,7 +46,6 @@ fn next_date(s: Option<&str>) -> Result<Option<String>> {
 impl Store {
     pub async fn subscriptions(&self, c: &Caller) -> Result<Vec<Subscription>> {
         c.need("read")?;
-        self.post_due(c.user_id).await?;
         let rows = sqlx::query(
             "SELECT * FROM subscriptions WHERE user_id = $1 \
              ORDER BY active DESC, (next_on IS NULL OR next_on = ''), next_on, id",
@@ -137,22 +136,33 @@ impl Store {
         Ok(())
     }
 
-    /// Add a transaction for every renewal that has come due, and move each date on. Cheap when nothing is
-    /// due, so reads that depend on balances call it first.
-    pub(crate) async fn post_due(&self, user_id: i64) -> Result<()> {
-        let now = today().to_string();
+    /// Add a transaction for every renewal of this person's subscriptions that has come due, and move each
+    /// date on. Returns how many subscriptions were posted.
+    pub(crate) async fn post_due(&self, user_id: i64) -> Result<usize> {
+        self.post_due_where(Some(user_id)).await
+    }
+
+    /// The same for everyone: what the background job runs, so a renewal on a shared account shows up for
+    /// the whole family whether or not its owner opens the app.
+    pub(crate) async fn post_due_all(&self) -> Result<usize> {
+        self.post_due_where(None).await
+    }
+
+    async fn post_due_where(&self, user_id: Option<i64>) -> Result<usize> {
+        let now = self.today().to_string();
         let due = sqlx::query(
             "SELECT s.id FROM subscriptions s JOIN account_owners o ON o.account_id = s.account_id AND o.user_id = s.user_id \
-             WHERE s.user_id = $1 AND s.active = 1 AND s.next_on IS NOT NULL AND s.next_on <> '' AND s.next_on <= $2",
+             WHERE ($1::BIGINT IS NULL OR s.user_id = $1) AND s.active = 1 AND s.next_on IS NOT NULL AND s.next_on <> '' AND s.next_on <= $2",
         )
         .bind(user_id)
         .bind(&now)
         .fetch_all(&self.pool)
         .await?;
+        let n = due.len();
         for r in due {
             self.post_renewals(r.get(0), &now).await?;
         }
-        Ok(())
+        Ok(n)
     }
 
     /// One subscription, under a row lock so two readers never add the same renewal twice.

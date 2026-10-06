@@ -57,6 +57,10 @@ fn user_from(r: &sqlx::postgres::PgRow) -> User {
 
 const USER_COLS: &str = "id, name, email, initials, phone, currency, picture, notify_card, notify_emi, notify_joint";
 
+/// The stored "password" of an account that has only ever signed in with a provider. It is not a valid
+/// hash, so no password matches it.
+pub(crate) const UNUSABLE_PASSWORD: &str = "!";
+
 /// Passwords are at least this long.
 pub const MIN_PASSWORD: usize = 12;
 
@@ -67,7 +71,7 @@ fn check_password(pw: &str) -> Result<()> {
     Ok(())
 }
 
-fn check_email(e: &str) -> Result<String> {
+pub(crate) fn check_email(e: &str) -> Result<String> {
     let e = clean(e).to_lowercase();
     match e.split_once('@') {
         Some((l, d)) if !l.is_empty() && d.contains('.') && !e.contains(' ') => Ok(e),
@@ -76,7 +80,17 @@ fn check_email(e: &str) -> Result<String> {
 }
 
 impl Store {
+    /// Create an account and sign it in. Refused when sign-ups are closed.
     pub async fn sign_up(&self, b: SignUp) -> Result<Session> {
+        if !self.cfg.signups_open {
+            return Err(Error::Forbidden("sign-ups are closed on this server".into()));
+        }
+        self.create_user(b).await
+    }
+
+    /// Create an account whatever the sign-up setting says: for the CLI, which belongs to whoever runs the
+    /// server.
+    pub async fn create_user(&self, b: SignUp) -> Result<Session> {
         let name = clean(&b.name).to_lowercase();
         if name.is_empty() {
             return Err(Error::bad("enter your name"));
@@ -118,7 +132,7 @@ impl Store {
         }
     }
 
-    async fn open_session(&self, user_id: i64) -> Result<Session> {
+    pub(crate) async fn open_session(&self, user_id: i64) -> Result<Session> {
         let token = new_token("trs");
         sqlx::query("INSERT INTO tokens (user_id, kind, token_hash, tail) VALUES ($1, 'session', $2, $3)")
             .bind(user_id)
@@ -137,20 +151,25 @@ impl Store {
         Ok(())
     }
 
-    /// Resolve a bearer token (session or connector) to who is acting. Sessions expire after 90 days.
+    /// Resolve a bearer token (session or connector) to who is acting. A session ends after 30 days without
+    /// use, and in any case after 180 days.
     pub async fn authenticate(&self, token: &str) -> Result<Caller> {
         let row = sqlx::query(
             "SELECT id, user_id, kind, scopes FROM tokens WHERE token_hash = $1 \
-             AND (kind = 'connector' OR created_at > utc_text(now() - interval '90 days'))",
+             AND (kind = 'connector' OR (created_at > utc_text(now() - interval '180 days') \
+                  AND COALESCE(last_used_at, created_at) > utc_text(now() - interval '30 days')))",
         )
         .bind(hash_token(token))
         .fetch_optional(&self.pool)
         .await?
         .ok_or(Error::Unauthorized)?;
         let (id, user_id): (i64, i64) = (row.get("id"), row.get("user_id"));
-        let kind: String = row.get("kind");
-        if kind == "connector" {
-            sqlx::query("UPDATE tokens SET last_used_at = utc_now() WHERE id = $1").bind(id).execute(&self.pool).await?;
+        // an hour's granularity is plenty and keeps a busy client from writing on every request
+        sqlx::query("UPDATE tokens SET last_used_at = utc_now() WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < utc_text(now() - interval '1 hour'))")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if row.get::<String, _>("kind") == "connector" {
             let scopes: String = row.get("scopes");
             Ok(Caller::scoped(user_id, scopes.split(',').filter(|s| !s.is_empty()).map(String::from).collect()))
         } else {
@@ -239,7 +258,9 @@ impl Store {
             .fetch_one(&self.pool)
             .await?
             .get(0);
-        if !verify_password(&b.current, &hash) {
+        // someone who only signs in with a provider has no password to give: a signed-in person may set one
+        let none_yet = hash == UNUSABLE_PASSWORD && c.is_interactive();
+        if !none_yet && !verify_password(&b.current, &hash) {
             return Err(Error::Forbidden("current password is wrong".into()));
         }
         self.set_password(c.user_id, &b.new).await
@@ -328,27 +349,38 @@ impl Store {
     }
 
     /// Delete the caller: their sign-in, the accounts only they own (with their transactions), and their
-    /// place in a family. Joint accounts stay with the other owners. Needs the password. Cannot be undone.
+    /// place in a family. Accounts shared with other owners stay with those owners. Needs the password.
+    /// All or nothing. Cannot be undone.
     pub async fn delete_user(&self, c: &Caller, password: &str) -> Result<()> {
         c.need("edit")?;
         let hash: String = sqlx::query("SELECT password_hash FROM users WHERE id = $1").bind(c.user_id).fetch_one(&self.pool).await?.get(0);
         if !verify_password(password, &hash) {
             return Err(Error::Forbidden("password is wrong".into()));
         }
-        self.leave_family(c).await?;
-        // what is left is owned by this person alone
-        let mine: Vec<i64> = sqlx::query("SELECT account_id FROM account_owners WHERE user_id = $1").bind(c.user_id).fetch_all(&self.pool).await?.iter().map(|r| r.get(0)).collect();
-        for id in mine {
-            self.remove_account(id).await?;
-        }
-        // their entries on accounts they no longer own are kept, under an owner of that account
-        sqlx::query(
-            "UPDATE transactions SET created_by = (SELECT o.user_id FROM account_owners o WHERE o.account_id = transactions.account_id LIMIT 1) WHERE created_by = $1",
+        let mut db = self.pool.begin().await?;
+        self.leave_family_on(&mut db, c.user_id).await?;
+        let alone: Vec<i64> = sqlx::query(
+            "SELECT account_id FROM account_owners GROUP BY account_id HAVING COUNT(*) = 1 AND bool_or(user_id = $1)",
         )
         .bind(c.user_id)
-        .execute(&self.pool)
+        .fetch_all(&mut *db)
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+        for id in alone {
+            self.remove_account(&mut db, id).await?;
+        }
+        sqlx::query("DELETE FROM account_owners WHERE user_id = $1").bind(c.user_id).execute(&mut *db).await?;
+        // what they entered on accounts that remain is kept, under an owner of that account
+        sqlx::query(
+            "UPDATE transactions SET created_by = (SELECT o.user_id FROM account_owners o WHERE o.account_id = transactions.account_id ORDER BY o.user_id LIMIT 1) WHERE created_by = $1",
+        )
+        .bind(c.user_id)
+        .execute(&mut *db)
         .await?;
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(c.user_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(c.user_id).execute(&mut *db).await?;
+        db.commit().await?;
         Ok(())
     }
 

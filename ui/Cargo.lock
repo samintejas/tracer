@@ -282,8 +282,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dots-design"
+name = "dots-ui"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4bd5e3fd5e950ce0116663e72283f1a85d37abe5187ca28274a3303af0617e5"
 dependencies = [
  "js-sys",
  "leptos",
@@ -1576,7 +1578,7 @@ name = "tracer-ui"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
- "dots-design",
+ "dots-ui",
  "gloo-net",
  "js-sys",
  "leptos",

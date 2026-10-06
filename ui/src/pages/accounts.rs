@@ -1,4 +1,4 @@
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 use tracer_api::money::{format_minor, parse_minor};
@@ -201,6 +201,12 @@ struct Form {
     emi: RwSignal<String>,
     emi_day: RwSignal<String>,
     invest_kind: RwSignal<String>,
+    /// investment: the id of the asset it is, or empty
+    asset_id: RwSignal<String>,
+    /// the caller's assets, loaded when an investment form opens
+    assets: RwSignal<Vec<Asset>>,
+    /// the account being edited, 0 for a new one: its own asset still counts as free
+    this_account: i64,
     invested: RwSignal<String>,
     sip: RwSignal<String>,
     sip_day: RwSignal<String>,
@@ -238,7 +244,10 @@ impl Form {
             start: s(d.start.unwrap_or_default()),
             emi: m(d.emi),
             emi_day: n(d.emi_day),
-            invest_kind: s(d.invest_kind),
+            invest_kind: s(if d.invest_kind.is_empty() { if a.is_some() { "other".into() } else { "mutual fund".into() } } else { d.invest_kind }),
+            asset_id: s(a.and_then(|a| a.asset.as_ref()).map(|l| l.id.to_string()).unwrap_or_default()),
+            assets: RwSignal::new(Vec::new()),
+            this_account: a.map(|a| a.id).unwrap_or(0),
             invested: m(d.invested),
             sip: m(d.sip),
             sip_day: n(d.sip_day),
@@ -267,19 +276,86 @@ impl Form {
                 f("emiday", "emi day", "number", "day of the month, like 5", false, self.emi_day),
                 f("emi", "emi (₹)", "text", "leave empty to calculate it", true, self.emi),
             ],
-            "investment" => vec![
-                f("invkind", "kind", "text", "mutual fund, fixed deposit, ppf, stocks", false, self.invest_kind),
-                f("invested", "amount invested (₹)", "text", "", false, self.invested),
-                f("balance", "current value (₹)", "text", "", false, self.balance),
-                f("sip", "monthly sip (₹)", "text", "if you add to it every month", true, self.sip),
-                f("sipday", "sip day", "number", "day of the month, like 2", true, self.sip_day),
-            ],
+            "investment" => {
+                let t = self.invest_kind.get();
+                let group = invest_group(&t);
+                let linked = self.linked() && matches!(group, InvestGroup::Physical | InvestGroup::Other);
+                let value = f("balance", "current value (₹)", "text", "", false, self.balance);
+                let sip = |label: &str| f("sip", label, "text", "if you add to it every month", true, self.sip);
+                let sip_day = |label: &str| f("sipday", label, "number", "day of the month, like 2", true, self.sip_day);
+                match (group, t.as_str()) {
+                    (InvestGroup::Market, _) => vec![
+                        f("inst", "broker or platform", "text", "like zerodha or groww", true, self.institution),
+                        f("invested", "amount invested (₹)", "text", "", false, self.invested),
+                        value,
+                        sip("monthly sip (₹)"),
+                        sip_day("sip day"),
+                    ],
+                    (InvestGroup::Deposit, "fixed deposit") => vec![
+                        f("inst", "bank", "text", "", true, self.institution),
+                        f("invested", "amount deposited (₹)", "text", "", false, self.invested),
+                        f("rate", "interest rate (% a year)", "text", "", false, self.rate),
+                        f("start", "opened in", "month", "", false, self.start),
+                        f("tenure", "term (months)", "number", "like 12 for a year", false, self.tenure),
+                        f("balance", "current value (₹)", "text", "leave empty to use the estimate", true, self.balance),
+                    ],
+                    (InvestGroup::Deposit, _) => vec![
+                        f("inst", "bank", "text", "", true, self.institution),
+                        f("sip", "monthly deposit (₹)", "text", "", false, self.sip),
+                        f("sipday", "deposit day", "number", "day of the month, like 5", true, self.sip_day),
+                        f("rate", "interest rate (% a year)", "text", "", false, self.rate),
+                        f("start", "first deposit", "month", "", false, self.start),
+                        f("tenure", "term (months)", "number", "like 24 for two years", false, self.tenure),
+                        f("balance", "current value (₹)", "text", "leave empty to use the estimate", true, self.balance),
+                    ],
+                    (InvestGroup::Retirement, _) => vec![
+                        f("inst", "provider", "text", "like epfo, post office, a bank", true, self.institution),
+                        f("invested", "total contributed (₹)", "text", "", false, self.invested),
+                        f("balance", "value on your statement (₹)", "text", "", false, self.balance),
+                        sip("monthly contribution (₹)"),
+                        sip_day("contribution day"),
+                        f("rate", "interest rate (% a year)", "text", "the rate declared for the year", true, self.rate),
+                    ],
+                    (InvestGroup::Physical, _) | (InvestGroup::Other, _) => {
+                        let mut v = vec![
+                            f("inst", if t == "real estate" { "builder or project" } else { "where you hold it" }, "text", "", true, self.institution),
+                            f("invested", if group == InvestGroup::Physical { "price paid (₹)" } else { "amount invested (₹)" }, "text", "", group == InvestGroup::Other, self.invested),
+                        ];
+                        if !linked {
+                            v.push(value);
+                        }
+                        if group == InvestGroup::Other {
+                            v.push(sip("monthly sip (₹)"));
+                            v.push(sip_day("sip day"));
+                        }
+                        v
+                    }
+                }
+            }
             _ => vec![
                 f("inst", "institution", "text", "", true, self.institution),
                 f("last4", "number ends", "text", "last 4 digits, to tell accounts apart", true, self.last4),
                 f("balance", "current balance (₹)", "text", "", false, self.balance),
             ],
         }
+    }
+
+    /// An asset is picked.
+    fn linked(&self) -> bool {
+        !self.asset_id.get().is_empty()
+    }
+
+    /// The picked asset, if it is in the list.
+    fn linked_asset(&self) -> Option<Asset> {
+        let id = self.asset_id.get().parse::<i64>().ok()?;
+        self.assets.with(|l| l.iter().find(|a| a.id == id).cloned())
+    }
+
+    /// A fixed or recurring deposit worked out from what is typed.
+    fn deposit(&self) -> Option<tracer_api::deposit::DepositCalc> {
+        let (lump, monthly) = if self.invest_kind.get() == "fixed deposit" { (parse_minor(&self.invested.get()).ok()?.abs(), 0) } else { (0, parse_minor(&self.sip.get()).ok()?.abs()) };
+        let now = js_sys::Date::new_0();
+        tracer_api::deposit::compute(lump, monthly, self.rate.get().trim().parse().ok()?, self.tenure.get().trim().parse().ok()?, &self.start.get(), (now.get_full_year() as i32, now.get_month() + 1))
     }
 
     fn loan(&self) -> Option<tracer_api::loan::LoanCalc> {
@@ -314,13 +390,46 @@ impl Form {
                 ]
             }
             "investment" => {
-                let (inv, cur) = (num(self.invested), num(self.balance));
+                let t = self.invest_kind.get();
+                let group = invest_group(&t);
+                let mut rows = vec![row("type", t.clone())];
                 let sip = num(self.sip);
                 let day = self.sip_day.get().trim().parse::<u32>().ok().filter(|d| (1..=31).contains(d));
-                vec![
-                    row("gain so far", if inv > 0 { format!("{} {}", if cur >= inv { "↑" } else { "↓" }, app.money((cur - inv).abs())) } else { "needs amount invested".into() }),
-                    row("monthly sip", if sip > 0 { format!("{}{}", app.money(sip), day.map(|d| format!(" on the {}", fmt::ordinal(d))).unwrap_or_default()) } else { "none".into() }),
-                ]
+                let sip_row = |label: &str| row(label, if sip > 0 { format!("{}{}", app.money(sip), day.map(|d| format!(" on the {}", fmt::ordinal(d))).unwrap_or_default()) } else { "none".into() });
+                let gain = |inv: i64, cur: i64, what: &str| {
+                    row("gain so far", if inv > 0 { format!("{} {} ({:+.1}%)", if cur >= inv { "↑" } else { "↓" }, app.money((cur - inv).abs()), (cur - inv) as f64 / inv as f64 * 100.0) } else { format!("needs {what}") })
+                };
+                match group {
+                    InvestGroup::Deposit => match self.deposit() {
+                        Some(d) => {
+                            rows.push(row("put in so far", app.money(d.invested)));
+                            rows.push(row("worth today (estimate)", app.money(d.value)));
+                            rows.push(row("interest so far", app.money(d.interest)));
+                            rows.push(row("matures", format!("{}{}", fmt::month_year(&d.matures), if d.months_left == 0 { " (done)".to_string() } else { format!(", {} months left", d.months_left) })));
+                            rows.push(row("worth at maturity", app.money(d.maturity_value)));
+                        }
+                        None => rows.push(row("worth and maturity", "needs the amount, rate, term and opening month".into())),
+                    },
+                    InvestGroup::Physical | InvestGroup::Other => {
+                        let inv = num(self.invested);
+                        match self.linked_asset() {
+                            Some(a) => {
+                                rows.push(row("value", format!("{} (from {})", app.money(a.value), a.name)));
+                                rows.push(gain(inv, a.value, "the price paid"));
+                            }
+                            None if self.linked() => rows.push(row("value", "from the linked asset".into())),
+                            None => rows.push(gain(inv, num(self.balance), "the amount invested")),
+                        }
+                        if group == InvestGroup::Other {
+                            rows.push(sip_row("monthly sip"));
+                        }
+                    }
+                    InvestGroup::Market | InvestGroup::Retirement => {
+                        rows.push(gain(num(self.invested), num(self.balance), "the amount invested"));
+                        rows.push(sip_row(if group == InvestGroup::Retirement { "monthly contribution" } else { "monthly sip" }));
+                    }
+                }
+                rows
             }
             _ => vec![row("opening balance", app.money(num(self.balance)))],
         }
@@ -343,7 +452,7 @@ impl Form {
         match kind {
             "loan" => "insights will track months left and the end date. record each emi as a transfer to this loan.",
             "credit" => "spend on the card as normal transactions. settle the bill as a transfer from a bank account to this card.",
-            "investment" => "record each sip or top-up as a transfer from a bank account to this investment.",
+            "investment" => "record each sip or top-up as a transfer from a bank account to this investment. one that is also an asset takes its value from the asset.",
             _ => "money in and out of this account is recorded on the transactions screen.",
         }
     }
@@ -408,11 +517,37 @@ impl Form {
                 day(&mut o, "emi_day", self.emi_day, "emi day")?;
             }
             "investment" => {
-                o.insert("invest_kind".into(), self.invest_kind.get_untracked().trim().into());
-                money(&mut o, "invested", self.invested, "the amount invested")?;
-                money(&mut o, "balance", self.balance, "the current value")?;
-                money(&mut o, "sip", self.sip, "the sip")?;
-                day(&mut o, "sip_day", self.sip_day, "sip day")?;
+                let t = self.invest_kind.get_untracked();
+                let group = invest_group(&t);
+                let can_link = matches!(group, InvestGroup::Physical | InvestGroup::Other);
+                let linked = can_link && !self.asset_id.get_untracked().is_empty();
+                o.insert("invest_kind".into(), t.clone().into());
+                // a type that cannot be an asset lets go of one (null unlinks)
+                o.insert("asset_id".into(), if linked { self.asset_id.get_untracked().parse::<i64>().map(Into::into).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null });
+                if t != "recurring deposit" {
+                    money(&mut o, "invested", self.invested, "the amount invested")?;
+                }
+                if !linked {
+                    money(&mut o, "balance", self.balance, "the current value")?;
+                }
+                if !matches!((group, t.as_str()), (InvestGroup::Deposit, "fixed deposit") | (InvestGroup::Physical, _)) {
+                    money(&mut o, "sip", self.sip, "the monthly amount")?;
+                    day(&mut o, "sip_day", self.sip_day, "the day of the month")?;
+                }
+                if matches!(group, InvestGroup::Deposit | InvestGroup::Retirement) {
+                    if let Ok(r) = self.rate.get_untracked().trim().parse::<f64>() {
+                        o.insert("rate".into(), r.into());
+                    }
+                }
+                if group == InvestGroup::Deposit {
+                    if let Ok(t) = self.tenure.get_untracked().trim().parse::<u32>() {
+                        o.insert("tenure".into(), t.into());
+                    }
+                    let start: String = self.start.get_untracked().trim().chars().take(7).collect();
+                    if !start.is_empty() {
+                        o.insert("start".into(), start.into());
+                    }
+                }
             }
             _ => {
                 o.insert("last4".into(), self.last4.get_untracked().trim().into());
@@ -430,13 +565,23 @@ fn Fields(form: Form, kind: String, #[prop(into)] name_hint: String, id: &'stati
     let name_id = format!("{id}-name");
     let name_hint_id = format!("{id}-name-h");
     let has_hint = !name_hint.is_empty();
+    let investment = kind == "investment";
+    if investment {
+        leptos::task::spawn_local(async move {
+            if let Ok(list) = api::assets().await {
+                form.assets.set(list);
+            }
+        });
+    }
+    let kind2 = kind.clone();
     view! {
         <div class="d-field">
             <label class="d-label" for=name_id.clone()>"name"</label>
             <input class="d-input" id=name_id type="text" aria-describedby=has_hint.then(|| name_hint_id.clone()) prop:value=move || form.name.get() on:input=move |e| form.name.set(event_target_value(&e))/>
             {has_hint.then(|| view! { <span class="d-hint" id=name_hint_id.clone()>{name_hint}</span> })}
         </div>
-        {form.fields(&kind, sym).into_iter().map(|f| {
+        {investment.then(|| view! { <InvestType form=form id=id/> })}
+        {move || form.fields(&kind2, sym).into_iter().map(|f| {
             let fid = format!("{id}-{}", f.id);
             let hid = format!("{fid}-h");
             let v = f.value;
@@ -450,6 +595,89 @@ fn Fields(form: Form, kind: String, #[prop(into)] name_hint: String, id: &'stati
                 </div>
             }
         }).collect_view()}
+        {investment.then(|| view! { <LinkedAsset form=form id=id/> })}
+    }
+}
+
+/// The groups of investment types, as the picker shows them.
+const INVEST_GROUPS: [(&str, InvestGroup); 5] = [
+    ("market: funds, shares, crypto", InvestGroup::Market),
+    ("deposits", InvestGroup::Deposit),
+    ("retirement", InvestGroup::Retirement),
+    ("physical", InvestGroup::Physical),
+    ("something else", InvestGroup::Other),
+];
+
+/// What kind of investment: it decides which details are asked for below.
+#[component]
+fn InvestType(form: Form, id: &'static str) -> impl IntoView {
+    let fid = format!("{id}-itype");
+    let hid = format!("{fid}-h");
+    let hint = move || match invest_group(&form.invest_kind.get()) {
+        InvestGroup::Market => "worth whatever the market says: you update its current value, and can add every month.",
+        InvestGroup::Deposit => "its worth now and at maturity is worked out from the rate and term.",
+        InvestGroup::Retirement => "take the value from your statement, and add the monthly contribution if you make one.",
+        InvestGroup::Physical => "can be one of your assets: then its value follows the asset and is counted once.",
+        InvestGroup::Other => "a plain amount invested and current value. can be linked to an asset.",
+    };
+    view! {
+        <div class="d-field">
+            <label class="d-label" for=fid.clone()>"type of investment"</label>
+            <span class="d-select">
+                <select class="d-input" id=fid aria-describedby=hid.clone() on:change=move |e| {
+                    let t = event_target_value(&e);
+                    // only gold, real estate and other can be an asset: let go of one that no longer fits
+                    if !matches!(invest_group(&t), InvestGroup::Physical | InvestGroup::Other) {
+                        form.asset_id.set(String::new());
+                    }
+                    form.invest_kind.set(t);
+                }>
+                    {INVEST_GROUPS.into_iter().map(|(label, g)| view! {
+                        <optgroup label=label>
+                            {INVEST_TYPES.into_iter().filter(|(_, tg)| *tg == g).map(|(t, _)| t).chain((g == InvestGroup::Other).then_some("other")).map(|t| view! {
+                                <option value=t selected=move || form.invest_kind.get() == t>{t}</option>
+                            }).collect_view()}
+                        </optgroup>
+                    }).collect_view()}
+                </select>
+            </span>
+            <span class="d-hint" id=hid>{hint}</span>
+        </div>
+    }
+}
+
+/// Pick the asset this investment is, so its value follows the asset.
+#[component]
+fn LinkedAsset(form: Form, id: &'static str) -> impl IntoView {
+    let fid = format!("{id}-asset");
+    let hid = format!("{fid}-h");
+    let can = move || matches!(invest_group(&form.invest_kind.get()), InvestGroup::Physical | InvestGroup::Other);
+    view! {
+        {move || can().then(|| {
+            let (fid, hid) = (fid.clone(), hid.clone());
+            let want = linkable_asset_kind(&form.invest_kind.get());
+            // free ones: not behind another account. the ones that match the type come first
+            let mut free: Vec<Asset> = form.assets.get().into_iter().filter(|a| a.account.as_ref().is_none_or(|l| l.id == form.this_account)).collect();
+            free.sort_by_key(|a| Some(a.kind.as_str()) != want);
+            view! {
+                <div class="d-field">
+                    <label class="d-label" for=fid.clone()>"linked asset "<span>"(optional)"</span></label>
+                    <span class="d-select">
+                        <select class="d-input" id=fid aria-describedby=hid.clone() on:change=move |e| form.asset_id.set(event_target_value(&e))>
+                            <option value="" selected=move || form.asset_id.get().is_empty()>"none: I enter the value myself"</option>
+                            {free.into_iter().map(|a| {
+                                let v = a.id.to_string();
+                                let v2 = v.clone();
+                                view! { <option value=v selected=move || form.asset_id.get() == v2>{format!("{} ({})", a.name, a.kind)}</option> }
+                            }).collect_view()}
+                        </select>
+                    </span>
+                    <span class="d-hint" id=hid>
+                        {move || if form.assets.with(|l| l.is_empty()) { "add the asset first, under assets, then link it here. its value is then counted once.".to_string() } else { "its value becomes this investment's value, and net worth counts it once.".to_string() }}
+                    </span>
+                </div>
+            }
+        })}
     }
 }
 
@@ -508,7 +736,7 @@ pub fn NewAccount() -> impl IntoView {
         form.co_owners.set(if joint { others().into_iter().map(|m| m.id).collect() } else { Vec::new() });
     });
     let kinds = move || {
-        let mut k = vec![("bank", "bank", "asset", "savings or current account".to_string()), ("credit", "credit card", "owed", "limit, bill date, due date".to_string()), ("loan", "loan", "owed", "amount, rate, tenure, emi".to_string()), ("investment", "investment", "asset", "funds, deposits, sip".to_string())];
+        let mut k = vec![("bank", "bank", "asset", "savings or current account".to_string()), ("credit", "credit card", "owed", "limit, bill date, due date".to_string()), ("loan", "loan", "owed", "amount, rate, tenure, emi".to_string()), ("investment", "investment", "asset", "funds, deposits, gold, property, pension".to_string())];
         let o = others();
         k.push(("joint", "joint", "asset", if o.is_empty() { "owned with someone in your family".to_string() } else { format!("shared with {}", o.iter().map(|m| m.name.split(' ').next().unwrap_or("").to_string()).collect::<Vec<_>>().join(" and ")) }));
         k
@@ -691,6 +919,8 @@ fn AccountView(a: Account, saved: RwSignal<bool>) -> impl IntoView {
     let confirm = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let owned = a.owners.iter().any(|o| o.id == app.my_id());
+    // with other owners on it you leave it; only the last owner deletes it
+    let shared_now = a.owners.len() > 1;
     // only a bank account can be joint
     let has_others = owned && app.has_family() && a.kind == AccountKind::Bank;
     let is_joint = Memo::new(move |_| !form.co_owners.get().is_empty());
@@ -736,7 +966,8 @@ fn AccountView(a: Account, saved: RwSignal<bool>) -> impl IntoView {
             }
             let nav = nav.clone();
             leptos::task::spawn_local(async move {
-                match api::delete(&format!("/accounts/{id}")).await {
+                let done = if shared_now { api::post::<serde_json::Value>(&format!("/accounts/{id}/leave"), &serde_json::json!({})).await } else { api::delete(&format!("/accounts/{id}")).await };
+                match done {
                     Ok(_) => {
                         app.reload();
                         nav("/accounts", Default::default());
@@ -747,6 +978,7 @@ fn AccountView(a: Account, saved: RwSignal<bool>) -> impl IntoView {
         }
     };
     let bal_label = match a.kind {
+        AccountKind::Investment if a.asset.is_some() => "value, from its asset",
         AccountKind::Investment => "current value",
         AccountKind::Credit | AccountKind::Loan => "owed",
         AccountKind::Bank => "balance",
@@ -796,11 +1028,11 @@ fn AccountView(a: Account, saved: RwSignal<bool>) -> impl IntoView {
                         </div>
                     </fieldset>
                     {move || err.get().map(|m| view! { <div class="d-card__body" style="padding-top:0"><span class="d-error" role="alert">{format!("error: {m}")}</span></div> })}
-                    {move || confirm.get().then(|| view! { <div class="d-card__body" style="padding-top:0"><span class="d-error" role="alert">"this deletes the account and its transactions. it cannot be undone. press delete again to confirm."</span></div> })}
+                    {move || confirm.get().then(|| view! { <div class="d-card__body" style="padding-top:0"><span class="d-error" role="alert">{if shared_now { "you will no longer see this account or its transactions. the other owners keep it. press leave again to confirm." } else { "this deletes the account and its transactions. it cannot be undone. press delete again to confirm." }}</span></div> })}
                     {if owned {
                         view! {
                             <footer class="d-card__foot" style="justify-content:space-between">
-                                <button type="button" class="d-btn d-btn--danger" on:click=delete>{move || if confirm.get() { "confirm delete" } else { "delete account" }}</button>
+                                <button type="button" class="d-btn d-btn--danger" on:click=delete>{move || match (shared_now, confirm.get()) { (true, true) => "confirm leave", (true, false) => "leave account", (false, true) => "confirm delete", (false, false) => "delete account" }}</button>
                                 <button type="submit" class="d-btn d-btn--primary" aria-busy=move || busy.get().then_some("true")>"save changes"</button>
                             </footer>
                         }.into_any()

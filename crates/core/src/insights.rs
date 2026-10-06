@@ -4,7 +4,7 @@ use chrono::{Datelike, Duration, NaiveDate};
 use sqlx::{AssertSqlSafe, Row};
 
 use crate::api::*;
-use crate::{Caller, Result, Store, today, visible};
+use crate::{Caller, Result, Store, visible};
 
 /// Investments and transfers move money without spending it.
 const NOT_SPENDING: &str = "investment";
@@ -71,7 +71,7 @@ impl Store {
 
     pub async fn insights(&self, c: &Caller, q: InsightsQuery) -> Result<Insights> {
         c.need("read")?;
-        let now = today();
+        let now = self.today();
         let window = q.days.unwrap_or(30).clamp(1, 365) as i64;
         let mut accounts = self.accounts(c, false).await?;
         if let Some(m) = q.member_id {
@@ -168,7 +168,8 @@ impl Store {
         c.need("read")?;
         let q = question.to_lowercase();
         let ins = self.insights(c, InsightsQuery::default()).await?;
-        let fmt = |v: i64| format!("₹{}", tracer_api::money::group_digits(v, true));
+        let cur = self.user(c.user_id).await?.currency;
+        let fmt = |v: i64| crate::notify::show_money(v, &cur);
         let has = |words: &[&str]| words.iter().any(|w| q.contains(w));
 
         if has(&["loan", "emi"]) && has(&["end", "left", "when", "finish", "emi"]) {
@@ -189,20 +190,41 @@ impl Store {
             }
             return Ok(ins.dues.iter().map(|d| format!("{}: {} on {}.", d.label, fmt(d.amount), d.date)).collect::<Vec<_>>().join("\n"));
         }
-        if has(&["invest", "sip", "mutual", "portfolio"]) {
+        if has(&["matur", "deposit"]) {
+            let mut lines: Vec<(String, String)> = ins
+                .investments
+                .iter()
+                .filter_map(|a| a.deposit.as_ref().map(|d| (d.matures.clone(), format!("{}: matures {}, worth about {} then ({} left). worth about {} now.", a.name, d.matures, fmt(d.maturity_value), if d.months_left == 0 { "matured".to_string() } else { format!("{} months", d.months_left) }, fmt(d.value)))))
+                .collect();
+            if !lines.is_empty() {
+                lines.sort();
+                return Ok(lines.into_iter().map(|(_, l)| l).collect::<Vec<_>>().join("\n"));
+            }
+        }
+        if has(&["invest", "sip", "mutual", "portfolio", "gold", "stock", "ppf", "epf", "nps"]) {
             if ins.investments.is_empty() {
                 return Ok("you have no investments set up.".into());
             }
-            let put: i64 = ins.investments.iter().filter_map(|a| a.details.invested).sum();
+            // the gain only counts what we know the cost of
+            let cost = |a: &Account| a.deposit.as_ref().map(|d| d.invested).or(a.details.invested).filter(|c| *c > 0);
+            let known: Vec<&Account> = ins.investments.iter().filter(|a| cost(a).is_some()).collect();
+            let put: i64 = known.iter().filter_map(|a| cost(a)).sum();
+            let known_now: i64 = known.iter().map(|a| a.balance).sum();
             let now: i64 = ins.investments.iter().map(|a| a.balance).sum();
-            return Ok(format!(
-                "you have put {} into {} investments. they are worth {} now, {} {}.",
-                fmt(put),
-                ins.investments.len(),
-                fmt(now),
-                if now >= put { "up" } else { "down" },
-                fmt((now - put).abs())
-            ));
+            let by_type = {
+                let mut m: BTreeMap<String, i64> = BTreeMap::new();
+                for a in &ins.investments {
+                    let t = if a.details.invest_kind.is_empty() { "other" } else { a.details.invest_kind.as_str() };
+                    *m.entry(t.to_string()).or_default() += a.balance;
+                }
+                m.into_iter().map(|(t, v)| format!("{t} {}", fmt(v))).collect::<Vec<_>>().join(", ")
+            };
+            let gain = if known.is_empty() {
+                String::new()
+            } else {
+                format!(" the ones with a known cost are {} against {} put in, {} {}.", fmt(known_now), fmt(put), if known_now >= put { "up" } else { "down" }, fmt((known_now - put).abs()))
+            };
+            return Ok(format!("your {} investments are worth {} now: {by_type}.{gain}", ins.investments.len(), fmt(now)));
         }
         if has(&["subscription", "renew"]) {
             let subs: Vec<Subscription> = self.subscriptions(c).await?.into_iter().filter(|s| s.active).collect();
@@ -228,14 +250,14 @@ impl Store {
             }
             return Ok(lines.join("\n"));
         }
-        if has(&["net worth", "worth", "how much do i have", "total"]) {
-            return Ok(format!("you hold {} and owe {}, so you are worth {}.", fmt(ins.assets), fmt(ins.owed), fmt(ins.assets - ins.owed)));
-        }
-        // "how much did i spend on <tag>"
+        // "how much did i spend on <tag>": the longest tag that appears as whole words in the question
+        let words = |t: &str| format!(" {} ", t.chars().map(|ch| if ch.is_alphanumeric() { ch } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "));
+        let padded = words(&q);
         let tags = self.tags(c).await?;
-        if let Some((tag, _)) = tags.iter().find(|(t, _)| q.contains(t.as_str())) {
+        let found = tags.iter().filter(|(t, _)| t.chars().count() >= 3 && padded.contains(&words(t))).max_by_key(|(t, _)| t.len());
+        if let Some((tag, _)) = found {
             let page = self
-                .transactions(c, TxFilter { tags: Some(tag.clone()), from: Some((today() - Duration::days(29)).to_string()), kinds: Some("debit".into()), limit: Some(500), ..Default::default() })
+                .transactions(c, TxFilter { tags: Some(tag.clone()), from: Some((self.today() - Duration::days(29)).to_string()), kinds: Some("debit".into()), limit: Some(500), ..Default::default() })
                 .await?;
             let total: i64 = page.items.iter().map(|t| -t.amount).sum();
             return Ok(format!(
@@ -244,6 +266,9 @@ impl Store {
                 page.total,
                 if page.total == 1 { "transaction" } else { "transactions" }
             ));
+        }
+        if has(&["net worth", "worth", "how much do i have", "total"]) {
+            return Ok(format!("you hold {} and owe {}, so you are worth {}.", fmt(ins.assets), fmt(ins.owed), fmt(ins.assets - ins.owed)));
         }
         if has(&["spend", "spent", "expense"]) {
             let top = ins.categories.first().map(|c| format!(" most of it on {} ({}).", c.tag, fmt(c.total))).unwrap_or_default();

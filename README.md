@@ -5,7 +5,7 @@ share or co-own accounts, insights, and an assistant you can ask in plain words.
 
 The backend is headless: one binary, `tracer`, is a **CLI**, a **REST API** and an **MCP server** over a Postgres
 database (in Docker). The web app is a separate Leptos (client side) build served by the same binary, on the
-[dots](../dots-design) design system.
+[dots-ui](https://crates.io/crates/dots-ui) design system.
 
 ```
 crates/api      wire types shared by everything (money, loan maths). No I/O. The UI uses it too.
@@ -34,6 +34,28 @@ database, address and web app folder; `.env.example` lists them with the compose
 `scripts/demo.sh` fills an empty database with a sample household to look around in.
 There is no email service, so a forgotten password is reset on the server: `tracer user passwd <email>`.
 
+## running it for real
+
+- **Put TLS in front.** The server speaks plain http on 127.0.0.1. Run it behind a reverse proxy (Caddy, nginx) that
+  terminates https, and set `TRACER_TRUST_PROXY=1` so the rate limits see each client's address. Add
+  `Strict-Transport-Security` at the proxy.
+- **Close sign-ups** once the people who should be in are in: `TRACER_SIGNUPS=closed`. `tracer user add` still works.
+- **Set `TRACER_TZ`** (for example `Asia/Kolkata`). "Today", subscription renewals and reminders follow it.
+- **Sign in with Google and GitHub** show up on the sign-in and sign-up pages once their client id and secret are
+  set (`TRACER_GOOGLE_*`, `TRACER_GITHUB_*`) along with `TRACER_PUBLIC_URL`. Register
+  `<TRACER_PUBLIC_URL>/api/auth/google/callback` (and `.../github/callback`) as the redirect address with each.
+  Google: create an OAuth client of type "web application", ask for no more than `openid email profile`, and switch
+  the consent screen to "in production" (it needs a homepage and privacy-policy link). GitHub: a plain OAuth app.
+  A provider must vouch for the email. If an account already has that address it is linked, and what was set up
+  under the address before (sessions, password) is cut off, since a password sign-up never proved the address was
+  theirs. They can set a new password under profile. With `TRACER_SIGNUPS=closed` an unknown address is refused.
+- **Background work** (subscription renewals, reminders, removing expired sessions and old notifications) runs inside
+  `serve` every `TRACER_JOB_SECS`. Reads never write. With `TRACER_JOB_SECS=0`, run `tracer jobs` from cron instead.
+- **Health check:** `GET /health` answers 200 only while the database does.
+- **Back up the database** (`pg_dump`), and change the compose password: it ships as `tracer`.
+- Sessions end after 30 days unused (180 at most). Sign-in is limited to 8 tries per address per 15 minutes, and a
+  response to too many tries is `429`.
+
 ## cli
 
 It works on the database directly (no server needed). `--as <email>` (or `TRACER_USER`) says whose data it is;
@@ -60,8 +82,8 @@ tracer token create claude --scopes read,transactions,add
 
 `/api/*`, JSON, `Authorization: Bearer <token>`. Amounts are decimal strings (`"3240.50"`) in major units. Sign in
 at `POST /api/auth/signin` for a session token, or create a connector token (profile, connectors).
-Routes: `auth/{signup,signin,signout,signout-all,reset}`, `me` (also delete), `me/password`, `export.csv`,
-`family` (create, delete), `family/{invite,join,leave}`, `accounts`, `transactions` (filter, sort, page, in/out
+Routes: `auth/{signup,signin,signout,signout-all,reset,providers,redeem}`, `auth/{google,github}/{start,callback}`, `me` (also delete), `me/password`, `export.csv`,
+`family` (create, delete), `family/{invite,join,leave}`, `accounts` (and `accounts/{id}/leave`), `transactions` (filter, sort, page, in/out
 totals), `transfers`, `transactions/{id}/attachments`, `subscriptions`, `assets`, `tags`, `insights`, `ask`, `notifications`, `connectors`.
 
 ## mcp
@@ -78,7 +100,9 @@ A token has scopes: `read`, `transactions` (read them), `add`, `edit`; a tool ou
   comes from its schedule.
 - An account is private (owners only) or shared (the owner's family can see it). A bank account can be joint:
   owned by several family members, who all see it and add to it.
-  Only owners change an account or add to it.
+  Only owners change an account or add to it. A co-owner can be added but only takes themselves off
+  (`accounts/{id}/leave`); an account with several owners can only be deleted once the others have left. A transfer
+  is between accounts you own.
 - A transfer is two linked transactions, edited and deleted together.
 - A subscription is a monthly or yearly charge on an account you own. When its renewal date arrives a debit is
   added (tagged with its category and `subscription`) and the date moves on. This happens when anything that
@@ -87,9 +111,16 @@ A token has scopes: `read`, `transactions` (read them), `add`, `edit`; a tool ou
 - An asset is something you own outside any account (property, vehicle, gold, electronics): the price paid and
   what it is worth now, which you keep up to date. It counts towards assets and net worth in insights, in your
   own and the family view, never in another member's. Assets are yours alone.
+- An investment has a type, and the type decides what it asks for. Market (mutual fund, stocks, etf, bonds,
+  crypto): invested, current value, optional sip. Deposits (fixed, recurring): rate, opening month and term, from
+  which its worth now and at maturity is estimated (quarterly compounding; the bank's figure wins if you type
+  one). Retirement (ppf, epf, nps): statement value, monthly contribution, optional rate. Physical (gold, real
+  estate) and other: price paid and value. The physical and other types can be linked to one of your assets:
+  the account's balance is then the asset's value, and net worth counts it once. Unlinking, or deleting the
+  asset, keeps the value the account had.
 
 ## test
 
 ```sh
-cargo test                       # needs the database up. each test gets its own schema. core: auth, family visibility, balances, transfers, loans, insights, ask
+cargo test                       # needs the database up. each test gets its own schema. core: auth, family visibility, balances, transfers, loans, insights, ask, one test per past bug (tests/hardening.rs); server: REST permissions, scopes, rate limits, headers
 ```

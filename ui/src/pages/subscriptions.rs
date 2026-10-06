@@ -1,4 +1,4 @@
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use tracer_api::money::{format_minor, parse_minor};
 use tracer_api::*;

@@ -3,6 +3,7 @@
 //! Amounts are integer minor units (paise/cents) in Rust and **decimal strings** on the wire (`"3240.50"`),
 //! so no client does float maths on money. Inputs also accept JSON numbers.
 
+pub mod deposit;
 pub mod loan;
 pub mod money;
 pub mod models;

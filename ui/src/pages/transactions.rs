@@ -1,4 +1,4 @@
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use tracer_api::money::{format_minor, parse_minor};
@@ -753,9 +753,10 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
                         <div class="d-row" role="list" aria-labelledby="sh-att-l" style="gap:4px">
                             {files.get().into_iter().map(|a| {
                                 let fid = a.id;
+                                let fname = a.name.clone();
                                 view! {
                                     <span class="d-badge" role="listitem" title=format!("{} kb", (a.size + 1023) / 1024) style="max-width:100%">
-                                        <button type="button" on:click=move |_| { leptos::task::spawn_local(async move { if let Err(e) = api::open_attachment(fid).await { app.fail(&e) } }); }
+                                        <button type="button" on:click=move |_| { let fname = fname.clone(); leptos::task::spawn_local(async move { if let Err(e) = api::open_attachment(fid, &fname).await { app.fail(&e) } }); }
                                             style="min-width:0;overflow:hidden;text-overflow:ellipsis;padding:0;border:0;background:none;font:inherit;color:inherit;cursor:pointer">{a.name.clone()}</button>
                                         <button type="button" class="d-badge__x" aria-label=format!("remove {}", a.name) on:click=move |_| drop_file(fid)><Ico d=X small=true/></button>
                                     </span>

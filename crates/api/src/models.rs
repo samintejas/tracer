@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::deposit::DepositCalc;
 use crate::loan::LoanCalc;
 use crate::money;
 
@@ -144,6 +145,55 @@ impl AccountKind {
     }
 }
 
+/// What an investment is. The group decides which details it asks for and what can be worked out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvestGroup {
+    /// Worth whatever the market says: you record the current value, and may add every month.
+    Market,
+    /// A fixed or recurring deposit: a rate, a start and a term give its worth now and at maturity.
+    Deposit,
+    /// Provident funds and pensions: the statement's value, a monthly contribution, an optional rate.
+    Retirement,
+    /// A holding that can also be one of your assets, so its value follows that asset.
+    Physical,
+    Other,
+}
+
+/// Every investment type, with its group. This is the whole list: the form, the server and the tools use it.
+pub const INVEST_TYPES: [(&str, InvestGroup); 12] = [
+    ("mutual fund", InvestGroup::Market),
+    ("stocks", InvestGroup::Market),
+    ("etf", InvestGroup::Market),
+    ("bonds", InvestGroup::Market),
+    ("crypto", InvestGroup::Market),
+    ("fixed deposit", InvestGroup::Deposit),
+    ("recurring deposit", InvestGroup::Deposit),
+    ("ppf", InvestGroup::Retirement),
+    ("epf", InvestGroup::Retirement),
+    ("nps", InvestGroup::Retirement),
+    ("gold", InvestGroup::Physical),
+    ("real estate", InvestGroup::Physical),
+];
+
+/// The group of an investment type; `other` (and anything unknown) is [`InvestGroup::Other`].
+pub fn invest_group(kind: &str) -> InvestGroup {
+    INVEST_TYPES.iter().find(|(k, _)| *k == kind).map(|(_, g)| *g).unwrap_or(InvestGroup::Other)
+}
+
+/// Is this a type the app knows? `other` counts.
+pub fn is_invest_type(kind: &str) -> bool {
+    kind == "other" || INVEST_TYPES.iter().any(|(k, _)| *k == kind)
+}
+
+/// The asset kind that goes with a physical investment, for suggesting what to link.
+pub fn linkable_asset_kind(invest: &str) -> Option<&'static str> {
+    match invest {
+        "gold" => Some("gold"),
+        "real estate" => Some("property"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
@@ -182,13 +232,13 @@ pub struct AccountDetails {
     /// loan: principal borrowed
     #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
     pub loan_total: Option<i64>,
-    /// loan: annual rate in percent
+    /// loan, deposit, retirement: annual rate in percent
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<f64>,
-    /// loan: months
+    /// loan, deposit: months
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenure: Option<u32>,
-    /// loan: `YYYY-MM` of the first instalment
+    /// loan: `YYYY-MM` of the first instalment; deposit: `YYYY-MM` it was opened
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
     /// loan: the lender's instalment when known, else computed
@@ -197,12 +247,13 @@ pub struct AccountDetails {
     /// loan: day of month the emi leaves
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emi_day: Option<u32>,
-    /// investment: `mutual fund`, `ppf`, `fixed deposit`, …
+    /// investment: one of [`INVEST_TYPES`], or `other`
     #[serde(default)]
     pub invest_kind: String,
-    /// investment: what you have put in
+    /// investment: what you have put in (a fixed deposit's lump sum)
     #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
     pub invested: Option<i64>,
+    /// investment: the monthly sip, deposit or contribution
     #[serde(default, with = "money::opt", skip_serializing_if = "Option::is_none")]
     pub sip: Option<i64>,
     /// investment: day of month the sip leaves
@@ -229,13 +280,46 @@ pub struct Account {
     /// Schedule figures for a loan with enough details.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loan: Option<LoanCalc>,
+    /// A fixed or recurring deposit with enough details: worth now and at maturity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deposit: Option<DepositCalc>,
+    /// The asset this investment is, when linked. Its value is this account's balance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<LinkedAsset>,
     pub archived: bool,
+}
+
+/// The asset behind a linked investment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkedAsset {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+}
+
+/// The investment an asset is linked to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkedAccount {
+    pub id: i64,
+    pub name: String,
+}
+
+/// `"asset_id": null` unlinks, a number links, leaving it out changes nothing.
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewAccount {
     pub name: String,
     pub kind: AccountKind,
+    /// An investment that is one of your assets: its value follows the asset.
+    #[serde(default)]
+    pub asset_id: Option<i64>,
     /// What you hold now, or owe now for credit. Ignored for loans (they have a schedule).
     #[serde(default, with = "money::opt")]
     pub balance: Option<i64>,
@@ -251,6 +335,9 @@ pub struct NewAccount {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct UpdateAccount {
     pub name: Option<String>,
+    /// Link to one of your assets (a number), or unlink (`null`). Investments only.
+    #[serde(default, deserialize_with = "double_option")]
+    pub asset_id: Option<Option<i64>>,
     pub visibility: Option<Visibility>,
     pub owner_ids: Option<Vec<i64>>,
     pub archived: Option<bool>,
@@ -583,6 +670,9 @@ pub struct Asset {
     pub value: i64,
     #[serde(default)]
     pub note: String,
+    /// The investment this is linked to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<LinkedAccount>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

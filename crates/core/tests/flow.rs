@@ -5,6 +5,7 @@ fn acct(name: &str, kind: AccountKind, balance: i64) -> NewAccount {
     NewAccount {
         name: name.into(),
         kind,
+        asset_id: None,
         balance: Some(balance),
         visibility: Visibility::Private,
         owner_ids: vec![],

@@ -10,7 +10,7 @@ mod transactions;
 
 pub use accounts::{AccountPage, Accounts, NewAccount};
 pub use assets::{AssetPanel, Assets};
-pub use auth::{Reset, SignIn, SignUp};
+pub use auth::{AuthCallback, Reset, SignIn, SignUp};
 pub use insights::Insights;
 pub use landing::Landing;
 pub use settings::Settings;

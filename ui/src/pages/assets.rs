@@ -1,4 +1,4 @@
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use tracer_api::money::{format_minor, parse_minor};
 use tracer_api::*;
@@ -88,7 +88,7 @@ pub fn Assets() -> impl IntoView {
                                                     <tr tabindex="0" aria-selected=move || selected(id) on:click=move |_| open(a2.clone())
                                                         on:keydown=move |e| if e.key() == "Enter" || e.key() == " " { e.prevent_default(); open(a3.clone()) }>
                                                         <td style="color:var(--text-strong)">{a.name.clone()}</td>
-                                                        <td><span class="d-badge">{a.kind.clone()}</span></td>
+                                                        <td><span class="d-badge">{a.kind.clone()}</span>{a.account.as_ref().map(|l| view! { " "<span class="d-badge">{format!("in {}", l.name)}</span> })}</td>
                                                         <td>{if a.bought.is_empty() { String::new() } else { fmt::month_year(&a.bought) }}</td>
                                                         <td class="d-num">{if a.cost > 0 { app.money(a.cost) } else { String::new() }}</td>
                                                         <td class="d-num" style="color:var(--text-strong)">{app.money(a.value)}</td>
@@ -122,6 +122,8 @@ pub fn AssetPanel(asset: Option<Asset>) -> impl IntoView {
     let err = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let confirm = RwSignal::new(false);
+    let linked = asset.as_ref().and_then(|a| a.account.clone());
+    let linked_note = linked.clone();
 
     let save = move || {
         let v = match parse_minor(&value.get_untracked()) {
@@ -150,6 +152,8 @@ pub fn AssetPanel(asset: Option<Asset>) -> impl IntoView {
                 Ok(_) => {
                     app.side.set(None);
                     app.bump();
+                    // an investment that follows this asset has a new value
+                    app.reload();
                 }
                 Err(e) if e.status == 400 || e.status == 403 => err.set(Some(e.message)),
                 Err(e) => app.fail(&e),
@@ -164,6 +168,7 @@ pub fn AssetPanel(asset: Option<Asset>) -> impl IntoView {
                     confirm.set(false);
                     app.side.set(None);
                     app.bump();
+                    app.reload();
                 }
                 Err(e) => app.fail(&e),
             }
@@ -176,6 +181,7 @@ pub fn AssetPanel(asset: Option<Asset>) -> impl IntoView {
                 <button type="button" class="d-btn d-btn--ghost d-btn--icon d-btn--sm" aria-label="close" on:click=move |_| app.side.set(None)><Ico d=X/></button>
             </header>
             <div class="d-rightbar__body" tabindex="0" role="group" aria-label="asset details" style="display:flex;flex-direction:column;gap:12px;padding:16px;font-size:inherit;overscroll-behavior:contain">
+                {linked_note.map(|l| view! { <span class="d-hint">{format!("this is the value of the investment '{}': change it here and that follows.", l.name)}</span> })}
                 <div class="d-field">
                     <label class="d-label" for="g-name">"name"</label>
                     <input class="d-input" id="g-name" type="text" prop:value=move || name.get() on:input=move |e| name.set(event_target_value(&e))/>
@@ -222,7 +228,7 @@ pub fn AssetPanel(asset: Option<Asset>) -> impl IntoView {
             <Button on:click=move |_| confirm.set(false)>"cancel"</Button>
             <Button variant=ButtonVariant::Danger on:click=remove>"delete asset"</Button>
         }>
-            <p>"it stops counting towards what you own."</p>
+            <p>{match &linked { Some(l) => format!("the investment '{}' keeps the value it has now, and counts on its own.", l.name), None => "it stops counting towards what you own.".to_string() }}</p>
         </Dialog>
     }
 }

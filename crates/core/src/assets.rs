@@ -4,7 +4,7 @@ use crate::api::*;
 use crate::{Caller, Error, Result, Store, clean};
 
 fn asset_from(r: &sqlx::postgres::PgRow) -> Asset {
-    Asset { id: r.get("id"), name: r.get("name"), kind: r.get("kind"), bought: r.get("bought"), cost: r.get("cost"), value: r.get("value"), note: r.get("note") }
+    Asset { id: r.get("id"), name: r.get("name"), kind: r.get("kind"), bought: r.get("bought"), cost: r.get("cost"), value: r.get("value"), note: r.get("note"), account: r.get::<Option<i64>, _>("acc_id").map(|id| LinkedAccount { id, name: r.get("acc_name") }) }
 }
 
 fn check_kind(k: &str) -> Result<()> {
@@ -19,16 +19,19 @@ fn non_negative(v: i64, what: &str) -> Result<i64> {
     if v < 0 { Err(Error::bad(format!("{what} cannot be negative"))) } else { Ok(v) }
 }
 
+/// An asset with the investment it stands behind, when there is one.
+const SELECT: &str = "SELECT s.*, a.id AS acc_id, a.name AS acc_name FROM assets s LEFT JOIN accounts a ON a.asset_id = s.id";
+
 impl Store {
     /// The things the caller owns outside any account. They are the caller's own: not shared with family.
     pub async fn assets(&self, c: &Caller) -> Result<Vec<Asset>> {
         c.need("read")?;
-        let rows = sqlx::query("SELECT * FROM assets WHERE user_id = $1 ORDER BY value DESC, id").bind(c.user_id).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("{SELECT} WHERE s.user_id = $1 ORDER BY s.value DESC, s.id"))).bind(c.user_id).fetch_all(&self.pool).await?;
         Ok(rows.iter().map(asset_from).collect())
     }
 
     async fn asset(&self, c: &Caller, id: i64) -> Result<Asset> {
-        let r = sqlx::query("SELECT * FROM assets WHERE id = $1 AND user_id = $2").bind(id).bind(c.user_id).fetch_optional(&self.pool).await?;
+        let r = sqlx::query(sqlx::AssertSqlSafe(format!("{SELECT} WHERE s.id = $1 AND s.user_id = $2"))).bind(id).bind(c.user_id).fetch_optional(&self.pool).await?;
         r.as_ref().map(asset_from).ok_or(Error::NotFound("asset"))
     }
 
@@ -82,13 +85,24 @@ impl Store {
 
     pub async fn delete_asset(&self, c: &Caller, id: i64) -> Result<()> {
         c.need("edit")?;
-        self.asset(c, id).await?;
-        sqlx::query("DELETE FROM assets WHERE id = $1").bind(id).execute(&self.pool).await?;
+        let asset = self.asset(c, id).await?;
+        let mut db = self.pool.begin().await?;
+        // an investment that took its value from this asset keeps that value, so its balance does not jump
+        sqlx::query(
+            "UPDATE accounts SET opening = $1 - (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = accounts.id), asset_id = NULL WHERE asset_id = $2",
+        )
+        .bind(asset.value)
+        .bind(id)
+        .execute(&mut *db)
+        .await?;
+        sqlx::query("DELETE FROM assets WHERE id = $1").bind(id).execute(&mut *db).await?;
+        db.commit().await?;
         Ok(())
     }
 
-    /// What the caller's things are worth together.
+    /// What the caller's things are worth together. A thing that is the value of an investment is left out:
+    /// that account already counts it.
     pub(crate) async fn things_value(&self, user_id: i64) -> Result<i64> {
-        Ok(sqlx::query("SELECT COALESCE(SUM(value), 0)::BIGINT FROM assets WHERE user_id = $1").bind(user_id).fetch_one(&self.pool).await?.get(0))
+        Ok(sqlx::query("SELECT COALESCE(SUM(s.value), 0)::BIGINT FROM assets s WHERE s.user_id = $1 AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.asset_id = s.id AND a.archived = 0)").bind(user_id).fetch_one(&self.pool).await?.get(0))
     }
 }

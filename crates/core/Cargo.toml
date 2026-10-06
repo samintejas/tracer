@@ -1,6 +1,6 @@
 [package]
 name = "tracer-core"
-description = "tracer's business logic over SQLite: the one place rules live, used by the CLI, REST and MCP front ends."
+description = "tracer's business logic over Postgres: the one place rules live, used by the CLI, REST and MCP front ends."
 version.workspace = true
 edition.workspace = true
 
@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 argon2 = "0.5"
 chrono = "0.4"
+chrono-tz = "0.10"
 hex = "0.4"
 rand = "0.10"
 sha2 = "0.11"

@@ -8,7 +8,25 @@ use tracer_core::{Caller, Error, Store};
 
 const NOTE: &str = "Amounts are decimal numbers or strings in major units (e.g. 3240 or \"3240.50\"). Dates are YYYY-MM-DD and default to today. Tags are lowercase words; the first tag is the category.";
 
+/// The scope a tool needs.
+fn scope_of(tool: &str) -> &'static str {
+    match tool {
+        "list_accounts" | "list_subscriptions" | "list_assets" | "get_insights" | "ask_tracer" => "read",
+        "list_transactions" | "list_tags" => "transactions",
+        "add_transaction" | "transfer_money" | "add_subscription" | "add_asset" => "add",
+        _ => "edit",
+    }
+}
+
+/// The tools this caller can use: a model is not offered what its token would refuse.
+fn tools_for(c: &Caller) -> Value {
+    let all = tools();
+    let list = all.as_array().map(|a| a.iter().filter(|t| t["name"].as_str().is_some_and(|n| c.can(scope_of(n)))).cloned().collect()).unwrap_or_default();
+    Value::Array(list)
+}
+
 fn tools() -> Value {
+    let invest_kinds: Vec<&str> = INVEST_TYPES.iter().map(|(k, _)| *k).chain(std::iter::once("other")).collect();
     let id = json!({"type": "integer"});
     let s = json!({"type": "string"});
     let amount = json!({"type": ["string", "number"], "description": "Positive amount in major units, e.g. 3240.50"});
@@ -17,18 +35,20 @@ fn tools() -> Value {
     json!([
       {"name": "list_accounts", "description": format!("List the accounts you can see (yours, joint ones, and family-shared ones). Each has a balance: what you hold, or what you owe for credit and loan accounts (see `kind`). {NOTE}"),
        "inputSchema": {"type": "object", "properties": {"include_archived": {"type": "boolean"}}}},
-      {"name": "create_account", "description": format!("Create an account. kind is bank, credit, loan or investment. `balance` is what you hold now, or owe now for credit. A loan needs loan_total, rate (annual %), tenure (months) and start (YYYY-MM); its balance comes from the schedule. owner_ids adds family members as co-owners of a bank account (joint); other kinds cannot be joint. {NOTE}"),
+      {"name": "create_account", "description": format!("Create an account. kind is bank, credit, loan or investment. `balance` is what you hold now, or owe now for credit. A loan needs loan_total, rate (annual %), tenure (months) and start (YYYY-MM); its balance comes from the schedule. owner_ids adds family members as co-owners of a bank account (joint); other kinds cannot be joint. An investment has an invest_kind (market types: mutual fund, stocks, etf, bonds, crypto take invested, balance, sip and sip_day; fixed deposit needs invested, rate, tenure and start, recurring deposit needs sip, rate, tenure and start, and both work out their worth and maturity; ppf, epf, nps take invested, balance, sip and an optional rate; gold, real estate and other can pass asset_id so their value follows one of your assets). {NOTE}"),
        "inputSchema": {"type": "object", "required": ["name", "kind"], "properties": {
          "name": s, "kind": {"type": "string", "enum": ACCOUNT_KINDS}, "balance": amount,
          "visibility": {"type": "string", "enum": ["private", "shared"], "description": "shared lets your family see it"},
          "owner_ids": {"type": "array", "items": id}, "institution": s, "last4": s,
          "limit": amount, "statement_day": id, "due_day": id,
          "loan_total": amount, "rate": {"type": "number"}, "tenure": id, "start": s, "emi": amount, "emi_day": id,
-         "invest_kind": s, "invested": amount, "sip": amount}}},
+         "invest_kind": {"type": "string", "enum": invest_kinds}, "invested": amount, "sip": amount, "sip_day": id,
+         "asset_id": {"type": "integer", "description": "investment only: one of your assets (see list_assets) this stands for; its value is the balance"}}}},
       {"name": "update_account", "description": "Rename, archive, change visibility or owners, set the current balance (history is kept), or change details such as a credit limit or a loan's terms. Only owners can.",
        "inputSchema": {"type": "object", "required": ["account_id"], "properties": {
          "account_id": id, "name": s, "archived": {"type": "boolean"}, "visibility": {"type": "string", "enum": ["private", "shared"]},
-         "owner_ids": {"type": "array", "items": id}, "balance": amount, "limit": amount, "due_day": id, "emi": amount, "invested": amount}}},
+         "owner_ids": {"type": "array", "items": id}, "balance": amount, "limit": amount, "due_day": id, "emi": amount, "invested": amount, "sip": amount, "sip_day": id,
+         "asset_id": {"type": ["integer", "null"], "description": "link an investment to one of your assets, or null to unlink it (it keeps the value it had)"}}}},
       {"name": "list_transactions", "description": "Search transactions you can see, newest first, with a total for paging. accounts is a comma separated list of account ids; kinds is debit, credit and/or transfer; tags matches any.",
        "inputSchema": {"type": "object", "properties": {
          "q": {"type": "string", "description": "substring of description, note or a tag"}, "account_id": id, "accounts": s, "member_id": id,
@@ -189,7 +209,7 @@ pub async fn handle(s: &Store, c: &Caller, req: Value) -> Option<Value> {
             }))
         }
         "ping" => ok(id, json!({})),
-        "tools/list" => ok(id, json!({"tools": tools()})),
+        "tools/list" => ok(id, json!({"tools": tools_for(c)})),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let a = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -219,7 +239,7 @@ pub async fn serve_stdio(s: Store, c: Caller) -> std::io::Result<()> {
                 for m in batch {
                     replies.extend(handle(&s, &c, m).await);
                 }
-                (!replies.is_empty()).then(|| Value::Array(replies))
+                (!replies.is_empty()).then_some(Value::Array(replies))
             }
             Ok(m) => handle(&s, &c, m).await,
             Err(_) => Some(err(Value::Null, -32700, "parse error")),

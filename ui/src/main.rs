@@ -4,7 +4,7 @@ mod icons;
 mod pages;
 mod state;
 
-use dots_design::prelude::*;
+use dots_ui::prelude::*;
 use leptos::prelude::*;
 use leptos_router::components::{ParentRoute, Redirect, Route, Router, Routes};
 use leptos_router::path;
@@ -26,6 +26,7 @@ fn App() -> impl IntoView {
                     <Route path=path!("/signin") view=pages::SignIn/>
                     <Route path=path!("/signup") view=pages::SignUp/>
                     <Route path=path!("/reset") view=pages::Reset/>
+                    <Route path=path!("/auth/callback") view=pages::AuthCallback/>
                     <ParentRoute path=path!("") view=pages::AppShell>
                         <Route path=path!("transactions") view=pages::Transactions/>
                         <Route path=path!("insights") view=pages::Insights/>

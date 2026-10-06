@@ -10,8 +10,11 @@ rm -rf dist && mkdir -p dist/fonts
 wasm-bindgen --target web --no-typescript --out-dir dist --out-name tracer-ui \
   target/wasm32-unknown-unknown/$PROFILE/tracer-ui.wasm
 command -v wasm-opt >/dev/null && wasm-opt -Oz -o dist/tracer-ui_bg.wasm dist/tracer-ui_bg.wasm || true
-cp ../../dots-design/assets/fonts/*.woff2 dist/fonts/
+# the fonts ship inside the dots-ui crate; find wherever cargo unpacked it
+DOTS=$(cargo metadata --format-version 1 | grep -o '"manifest_path":"[^"]*/dots-ui-[0-9][^"]*/Cargo.toml"' | head -1 | sed 's/.*:"\(.*\)\/Cargo.toml"/\1/')
+cp "$DOTS"/assets/fonts/*.woff2 dist/fonts/
 # cache-bust by content
 V=$(cat dist/tracer-ui_bg.wasm | cksum | cut -d' ' -f1)
 sed "s/__V__/$V/g" index.html > dist/index.html
+sed "s/__V__/$V/g" boot.js > dist/boot.js   # the start-up script is a file of its own so the page can forbid inline scripts
 ls -lh dist | sed 's/^/  /'
