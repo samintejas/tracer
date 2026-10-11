@@ -29,7 +29,7 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn copy(app: AppState, text: String) {
+pub fn copy(app: AppState, text: String) {
     if let Some(w) = web_sys::window() {
         let _ = w.navigator().clipboard().write_text(&text);
         app.ok("copied");

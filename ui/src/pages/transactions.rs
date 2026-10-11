@@ -193,7 +193,7 @@ pub fn Transactions() -> impl IntoView {
                             <Filter label="type" options=kind_options selected=kinds/>
                             <Filter label="account" options=acct_options selected=accts/>
                             <Filter label="tags" options=tag_options selected=tag_sel/>
-                            <Filter label="merchant / payer" options=party_options selected=party_sel/>
+                            <Filter label="party" options=party_options selected=party_sel/>
                             {move || family.get().then(|| view! { <Filter label="person" options=people_options selected=people single=true empty="everyone"/> })}
                             <DateFilter from=from to=to label=range_label/>
                             {move || any_filter.get().then(|| view! { <Button variant=ButtonVariant::Ghost on:click=move |_| clear_all()>"clear all"</Button> })}
@@ -202,7 +202,7 @@ pub fn Transactions() -> impl IntoView {
                                     {move || kinds.get().into_iter().map(|k| { let k2 = k.clone(); view! { <Tag text=format!("type: {k}") on_remove=move |()| kinds.update(|v| v.retain(|x| *x != k2))/> } }).collect_view()}
                                     {move || accts.get().into_iter().map(|a| { let a2 = a.clone(); view! { <Tag text=format!("account: {}", app.account_name(a.parse().unwrap_or(0))) on_remove=move |()| accts.update(|v| v.retain(|x| *x != a2))/> } }).collect_view()}
                                     {move || tag_sel.get().into_iter().map(|t| { let t2 = t.clone(); view! { <Tag text=t on_remove=move |()| tag_sel.update(|v| v.retain(|x| *x != t2))/> } }).collect_view()}
-                                    {move || party_sel.get().into_iter().map(|p| { let p2 = p.clone(); view! { <Tag text=format!("merchant: {p}") on_remove=move |()| party_sel.update(|v| v.retain(|x| *x != p2))/> } }).collect_view()}
+                                    {move || party_sel.get().into_iter().map(|p| { let p2 = p.clone(); view! { <Tag text=format!("party: {p}") on_remove=move |()| party_sel.update(|v| v.retain(|x| *x != p2))/> } }).collect_view()}
                                     {move || people.get().into_iter().map(|p| { let name = people_options.get().into_iter().find(|o| o.value == p).map(|o| o.label).unwrap_or_default(); view! { <Tag text=format!("person: {}", name.split(' ').next().unwrap_or("")) on_remove=move |()| people.set(Vec::new())/> } }).collect_view()}
                                     {move || (!from.get().is_empty() || !to.get().is_empty()).then(|| view! { <Tag text=format!("date: {}", range_label.get()) on_remove=move |()| { from.set(String::new()); to.set(String::new()); }/> })}
                                     {move || (!q.get().trim().is_empty()).then(|| view! { <Tag text=format!("search: {}", q.get().trim()) on_remove=move |()| q.set(String::new())/> })}
@@ -698,6 +698,10 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
                 <button type="button" class="d-btn d-btn--ghost d-btn--icon d-btn--sm" aria-label="close" on:click=move |_| app.panel.set(None)><Ico d=X/></button>
             </header>
             <div class="d-rightbar__body" tabindex="0" role="group" aria-label="transaction details" style="display:flex;flex-direction:column;gap:12px;padding:16px;font-size:inherit;overscroll-behavior:contain">
+                <div class="d-row" style="justify-content:space-between;flex-wrap:nowrap;align-items:center">
+                    <span class="d-label">"transaction id"</span>
+                    <button type="button" class="d-btn d-btn--ghost d-btn--sm" title="copy transaction id" aria-label=format!("copy transaction id {id}") on:click=move |_| crate::pages::settings::copy(app, id.to_string())><span style="font-family:monospace">{format!("#{id}")}</span><Ico d=COPY/></button>
+                </div>
                 <div class="seg" role="group" aria-label="kind of transaction">{seg("expense")}{seg("income")}{seg("transfer")}</div>
                 <div class="d-field">
                     <label class="d-label" for="sh-amt">"amount"</label>
@@ -744,7 +748,7 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
                 </div>
                 {(!is_transfer).then(|| view! {
                     <div class="d-field">
-                        <label class="d-label" for="sh-party">{move || if kind.get() == "income" { "received from " } else { "merchant " }}<span>"(optional)"</span></label>
+                        <label class="d-label" for="sh-party">{move || if kind.get() == "income" { "received from " } else { "paid to " }}<span>"(optional)"</span></label>
                         <input class="d-input" id="sh-party" type="text" list="sh-party-list" prop:value=move || party.get() on:input=move |e| party.set(event_target_value(&e))/>
                         <datalist id="sh-party-list">{move || app.parties.get().into_iter().map(|p| view! { <option value=p></option> }).collect_view()}</datalist>
                     </div>
