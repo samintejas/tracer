@@ -116,11 +116,12 @@ impl Store {
             }
         }
 
-        // four calendar weeks, monday first, ending with this week (days after today are left out)
-        let monday = now - Duration::days(now.weekday().num_days_from_monday() as i64 + 21);
-        let days: Vec<DayTotal> = (0..=(now - monday).num_days())
+        // this calendar month, every day of it (the days still to come total zero)
+        let first = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
+        let next_month = if now.month() == 12 { NaiveDate::from_ymd_opt(now.year() + 1, 1, 1) } else { NaiveDate::from_ymd_opt(now.year(), now.month() + 1, 1) }.unwrap();
+        let days: Vec<DayTotal> = (0..(next_month - first).num_days())
             .map(|i| {
-                let date = monday + Duration::days(i);
+                let date = first + Duration::days(i);
                 let total = rows.iter().filter(|r| r.date == date && r.is_spend()).map(|r| -r.amount).sum();
                 DayTotal { date: date.to_string(), total }
             })

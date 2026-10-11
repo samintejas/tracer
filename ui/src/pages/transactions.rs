@@ -74,12 +74,13 @@ pub fn Transactions() -> impl IntoView {
     let accts = RwSignal::new(Vec::<String>::new());
     let people = RwSignal::new(Vec::<String>::new());
     let tag_sel = RwSignal::new(Vec::<String>::new());
+    let party_sel = RwSignal::new(Vec::<String>::new());
     let from = RwSignal::new(String::new());
     let to = RwSignal::new(String::new());
     let sort_key = RwSignal::new("date");
     let sort_dir = RwSignal::new(SortDirection::Descending);
     let page = RwSignal::new(1usize);
-    let page_size = RwSignal::new(10usize);
+    let page_size = RwSignal::new(50usize);
 
     // "view transactions" on an account arrives as ?account=3
     let query = use_query_map();
@@ -94,6 +95,7 @@ pub fn Transactions() -> impl IntoView {
         kinds: join(&kinds.get()),
         accounts: join(&accts.get()),
         tags: join(&tag_sel.get()),
+        parties: join(&party_sel.get()),
         member_id: people.get().first().and_then(|p| p.parse().ok()),
         from: Some(from.get()).filter(|s| !s.is_empty()),
         to: Some(to.get()).filter(|s| !s.is_empty()),
@@ -131,7 +133,7 @@ pub fn Transactions() -> impl IntoView {
             page.set(pages.get());
         }
     });
-    let any_filter = Memo::new(move |_| !q.get().trim().is_empty() || !kinds.get().is_empty() || !accts.get().is_empty() || !people.get().is_empty() || !tag_sel.get().is_empty() || !from.get().is_empty() || !to.get().is_empty());
+    let any_filter = Memo::new(move |_| !q.get().trim().is_empty() || !kinds.get().is_empty() || !accts.get().is_empty() || !people.get().is_empty() || !tag_sel.get().is_empty() || !party_sel.get().is_empty() || !from.get().is_empty() || !to.get().is_empty());
     let clear_all = move || {
         q.set(String::new());
         for s in [kinds, accts, people, tag_sel] {
@@ -163,6 +165,7 @@ pub fn Transactions() -> impl IntoView {
         app.accounts.get().into_iter().filter(|a| !a.archived).map(|a| FilterOption::new(a.id.to_string(), a.name.clone()).meta(format!("{}{}", if a.kind.is_liability() { "−" } else { "" }, app.money(a.balance)))).collect::<Vec<_>>()
     });
     let tag_options = Signal::derive(move || app.tags.get().into_iter().map(|t| FilterOption::new(t.clone(), t.clone()).cat(tag_cat(&t))).collect::<Vec<_>>());
+    let party_options = Signal::derive(move || app.parties.get().into_iter().map(|p| FilterOption::new(p.clone(), p.clone())).collect::<Vec<_>>());
     let people_options = Signal::derive(move || app.members().into_iter().map(|m| FilterOption::new(m.id.to_string(), m.name.clone())).collect::<Vec<_>>());
     let range_label = Memo::new(move |_| range_text(&from.get(), &to.get()));
 
@@ -190,6 +193,7 @@ pub fn Transactions() -> impl IntoView {
                             <Filter label="type" options=kind_options selected=kinds/>
                             <Filter label="account" options=acct_options selected=accts/>
                             <Filter label="tags" options=tag_options selected=tag_sel/>
+                            <Filter label="merchant / payer" options=party_options selected=party_sel/>
                             {move || family.get().then(|| view! { <Filter label="person" options=people_options selected=people single=true empty="everyone"/> })}
                             <DateFilter from=from to=to label=range_label/>
                             {move || any_filter.get().then(|| view! { <Button variant=ButtonVariant::Ghost on:click=move |_| clear_all()>"clear all"</Button> })}
@@ -198,6 +202,7 @@ pub fn Transactions() -> impl IntoView {
                                     {move || kinds.get().into_iter().map(|k| { let k2 = k.clone(); view! { <Tag text=format!("type: {k}") on_remove=move |()| kinds.update(|v| v.retain(|x| *x != k2))/> } }).collect_view()}
                                     {move || accts.get().into_iter().map(|a| { let a2 = a.clone(); view! { <Tag text=format!("account: {}", app.account_name(a.parse().unwrap_or(0))) on_remove=move |()| accts.update(|v| v.retain(|x| *x != a2))/> } }).collect_view()}
                                     {move || tag_sel.get().into_iter().map(|t| { let t2 = t.clone(); view! { <Tag text=t on_remove=move |()| tag_sel.update(|v| v.retain(|x| *x != t2))/> } }).collect_view()}
+                                    {move || party_sel.get().into_iter().map(|p| { let p2 = p.clone(); view! { <Tag text=format!("merchant: {p}") on_remove=move |()| party_sel.update(|v| v.retain(|x| *x != p2))/> } }).collect_view()}
                                     {move || people.get().into_iter().map(|p| { let name = people_options.get().into_iter().find(|o| o.value == p).map(|o| o.label).unwrap_or_default(); view! { <Tag text=format!("person: {}", name.split(' ').next().unwrap_or("")) on_remove=move |()| people.set(Vec::new())/> } }).collect_view()}
                                     {move || (!from.get().is_empty() || !to.get().is_empty()).then(|| view! { <Tag text=format!("date: {}", range_label.get()) on_remove=move |()| { from.set(String::new()); to.set(String::new()); }/> })}
                                     {move || (!q.get().trim().is_empty()).then(|| view! { <Tag text=format!("search: {}", q.get().trim()) on_remove=move |()| q.set(String::new())/> })}
@@ -250,7 +255,7 @@ pub fn Transactions() -> impl IntoView {
                             <nav class="d-row" aria-label="pages" style="gap:4px;flex-wrap:nowrap">
                                 <span class="d-select" style="width:64px;margin-right:8px" title="rows per page">
                                     <select class="d-input" aria-label="rows per page" on:change=move |e| { if let Ok(n) = event_target_value(&e).parse() { page_size.set(n); page.set(1); } }>
-                                        {[10usize, 25, 50].into_iter().map(|n| view! { <option value=n.to_string() selected=move || page_size.get() == n>{n.to_string()}</option> }).collect_view()}
+                                        {[50usize, 100, 500, 1000].into_iter().map(|n| view! { <option value=n.to_string() selected=move || page_size.get() == n>{n.to_string()}</option> }).collect_view()}
                                     </select>
                                 </span>
                                 <button type="button" class="d-btn d-btn--ghost d-btn--icon" aria-label="previous page" title="previous" disabled={move || page.get() <= 1} on:click=move |_| page.update(|p| *p -= 1)><Ico d=PREV/></button>
@@ -602,6 +607,7 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
     let desc = RwSignal::new(t.description.clone());
     let amount = RwSignal::new(fmt::plain(t.amount));
     let date = RwSignal::new(t.date.clone());
+    let party = RwSignal::new(t.party.clone());
     let note = RwSignal::new(t.note.clone());
     let tags = RwSignal::new(t.tags.join(", "));
     let acct = RwSignal::new(t.account_id.to_string());
@@ -620,7 +626,7 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
             return err.set(Some("enter an amount above zero, a description, and a date that is not in the future".into()));
         }
         busy.set(true);
-        let mut body = serde_json::json!({"description": desc.get_untracked().trim().to_lowercase(), "amount": format_minor(a), "date": date.get_untracked(), "note": note.get_untracked(), "tags": parse_tags(&tags.get_untracked())});
+        let mut body = serde_json::json!({"description": desc.get_untracked().trim().to_lowercase(), "amount": format_minor(a), "date": date.get_untracked(), "party": party.get_untracked(), "note": note.get_untracked(), "tags": parse_tags(&tags.get_untracked())});
         if !is_transfer {
             body["account_id"] = acct.get_untracked().parse::<i64>().unwrap_or(0).into();
             body["kind"] = if kind.get_untracked() == "income" { "credit" } else { "debit" }.into();
@@ -736,6 +742,13 @@ pub fn TxPanel(t: Transaction) -> impl IntoView {
                         } }).collect_view()}
                     </div>
                 </div>
+                {(!is_transfer).then(|| view! {
+                    <div class="d-field">
+                        <label class="d-label" for="sh-party">{move || if kind.get() == "income" { "received from " } else { "merchant " }}<span>"(optional)"</span></label>
+                        <input class="d-input" id="sh-party" type="text" list="sh-party-list" prop:value=move || party.get() on:input=move |e| party.set(event_target_value(&e))/>
+                        <datalist id="sh-party-list">{move || app.parties.get().into_iter().map(|p| view! { <option value=p></option> }).collect_view()}</datalist>
+                    </div>
+                })}
                 <div class="d-field">
                     <label class="d-label" for="sh-note">"notes "<span>"(optional)"</span></label>
                     <textarea class="d-input" id="sh-note" rows="3" aria-describedby="sh-note-h" prop:value=move || note.get() on:input=move |e| note.set(event_target_value(&e))></textarea>

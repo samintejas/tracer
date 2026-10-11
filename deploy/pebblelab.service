@@ -1,0 +1,21 @@
+[Unit]
+Description=pebblelab/fin
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=samin
+WorkingDirectory=/home/samin/apps/pebblelab
+EnvironmentFile=/home/samin/apps/pebblelab/.env
+ExecStart=/home/samin/apps/pebblelab/pebblelab serve
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

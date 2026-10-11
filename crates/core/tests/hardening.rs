@@ -8,7 +8,7 @@ fn acct(name: &str, kind: AccountKind, balance: i64) -> NewAccount {
 }
 
 fn spend(account_id: i64, amount: i64, desc: &str) -> NewTransaction {
-    NewTransaction { account_id, kind: TxKind::Debit, amount, date: None, description: desc.into(), tags: vec![], note: String::new() }
+    NewTransaction { account_id, kind: TxKind::Debit, amount, date: None, description: desc.into(), tags: vec![], party: String::new(), note: String::new() }
 }
 
 async fn user(s: &Store, name: &str) -> (Caller, User) {

@@ -9,7 +9,7 @@ use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, COOK
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -126,6 +126,7 @@ pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oau
         .route("/assets", get(assets).post(add_asset))
         .route("/assets/{id}", axum::routing::patch(update_asset).delete(delete_asset))
         .route("/tags", get(tags))
+        .route("/parties", get(parties))
         .route("/insights", get(insights))
         .route("/ask", post(ask))
         .route("/notifications", get(notifications))
@@ -138,6 +139,12 @@ pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oau
     Router::new()
         .route("/health", get(health))
         .route("/mcp", post(mcp_http))
+        // MCP clients look here for OAuth before trying a bearer token. The web app's catch-all page would
+        // answer 200 with html, which they cannot read; say plainly there is nothing.
+        .route("/.well-known/{*rest}", any(no_oauth))
+        .route("/authorize", any(no_oauth))
+        .route("/token", any(no_oauth))
+        .route("/register", any(no_oauth))
         .nest("/api", api)
         .with_state(store)
         // The Leptos UI. Unknown paths fall back to index.html so client routes survive a refresh.
@@ -159,6 +166,10 @@ pub fn router(store: Store, ui_dir: PathBuf, limits: Arc<Limits>, oauth: Arc<Oau
 /// Is the database reachable? Whatever watches the server (a proxy, an orchestrator) should ask this.
 async fn health(State(s): State<Store>) -> Result<&'static str, StatusCode> {
     s.ping().await.map(|_| "ok").map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn no_oauth() -> (StatusCode, Json<Value>) {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "this server uses bearer tokens, not oauth" })))
 }
 
 async fn mcp_http(State(s): State<Store>, Auth(c, _): Auth, Json(req): Json<Value>) -> Response {
@@ -502,6 +513,10 @@ async fn delete_attachment(State(s): State<Store>, Auth(c, _): Auth, Path(id): P
     Ok(Json(json!({ "ok": true })))
 }
 
+async fn parties(State(s): State<Store>, Auth(c, _): Auth) -> R<Vec<Value>> {
+    Ok(Json(s.parties(&c).await?.into_iter().map(|(party, uses)| json!({ "party": party, "uses": uses })).collect()))
+}
+
 async fn tags(State(s): State<Store>, Auth(c, _): Auth) -> R<Vec<Value>> {
     Ok(Json(s.tags(&c).await?.into_iter().map(|(tag, uses)| json!({ "tag": tag, "uses": uses })).collect()))
 }
@@ -652,6 +667,18 @@ mod tests {
             let (s, _) = json(&app, "POST", path, None, Some(body)).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_gets_json_not_the_web_app() {
+        let (app, _) = app().await;
+        for path in ["/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server", "/authorize"] {
+            let (s, v) = json(&app, "GET", path, None, None).await;
+            assert_eq!(s, StatusCode::NOT_FOUND, "{path}");
+            assert!(v["error"].is_string(), "{path}: {v}");
+        }
+        let (s, _) = json(&app, "POST", "/register", None, Some(json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

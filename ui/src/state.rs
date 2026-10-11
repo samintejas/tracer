@@ -18,6 +18,7 @@ pub struct AppState {
     pub me: RwSignal<Option<Me>>,
     pub accounts: RwSignal<Vec<Account>>,
     pub tags: RwSignal<Vec<String>>,
+    pub parties: RwSignal<Vec<String>>,
     pub notes: RwSignal<Vec<Notification>>,
     pub rev: RwSignal<u32>,
     /// The transaction open in the side panel.
@@ -33,6 +34,7 @@ impl AppState {
             me: RwSignal::new(None),
             accounts: RwSignal::new(Vec::new()),
             tags: RwSignal::new(Vec::new()),
+            parties: RwSignal::new(Vec::new()),
             notes: RwSignal::new(Vec::new()),
             rev: RwSignal::new(0),
             panel: RwSignal::new(None),
@@ -129,6 +131,9 @@ impl AppState {
             }
             if let Ok(t) = api::tags().await {
                 s.tags.set(t);
+            }
+            if let Ok(p) = api::parties().await {
+                s.parties.set(p);
             }
             if let Ok(n) = api::notifications().await {
                 s.notes.set(n);

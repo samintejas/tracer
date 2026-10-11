@@ -183,6 +183,14 @@ pub async fn tags() -> Result<Vec<String>, ApiError> {
     Ok(get::<Vec<T>>("/tags").await?.into_iter().map(|t| t.tag).collect())
 }
 
+pub async fn parties() -> Result<Vec<String>, ApiError> {
+    #[derive(serde::Deserialize)]
+    struct P {
+        party: String,
+    }
+    Ok(get::<Vec<P>>("/parties").await?.into_iter().map(|p| p.party).collect())
+}
+
 pub async fn subscriptions() -> Result<Vec<Subscription>, ApiError> {
     get("/subscriptions").await
 }

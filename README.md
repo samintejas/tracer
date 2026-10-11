@@ -34,12 +34,12 @@ ui/build.sh                                  # builds ui/dist; PROFILE=debug for
 database, address and web app folder; `.env.example` lists them with the compose settings (`PEBBLELAB_PG_PASSWORD`,
 `PEBBLELAB_PG_PORT`). The schema is created and migrated when the binary starts. `docker compose down -v` wipes the data.
 `scripts/demo.sh` fills an empty database with a sample household to look around in.
-A forgotten password is reset from an emailed link (Resend: set `PEBBLELAB_RESEND_API_KEY` and `PEBBLELAB_MAIL_FROM`). Set `PEBBLELAB_NO_PASSWORD_LOGIN=1` to let people in only through Google or GitHub: the email-and-password screens are hidden and their routes refuse. Without a key no email is sent, and the server's owner resets it with `pebblelab user passwd <email>`.
+A forgotten password is reset from an emailed link (Resend: set `PEBBLELAB_RESEND_API_KEY` and `PEBBLELAB_MAIL_FROM`). Set `PEBBLELAB_NO_PASSWORD_LOGIN=true` to let people in only through Google or GitHub: the email-and-password screens are hidden and their routes refuse. Without a key no email is sent, and the server's owner resets it with `pebblelab user passwd <email>`.
 
 ## running it for real
 
 - **Put TLS in front.** The server speaks plain http on 127.0.0.1. Run it behind a reverse proxy (Caddy, nginx) that
-  terminates https, and set `PEBBLELAB_TRUST_PROXY=1` so the rate limits see each client's address. Add
+  terminates https, and set `PEBBLELAB_TRUST_PROXY=true` so the rate limits see each client's address. Add
   `Strict-Transport-Security` at the proxy.
 - **Close sign-ups** once the people who should be in are in: `PEBBLELAB_SIGNUPS=closed`. `pebblelab user add` still works.
 - **Set `PEBBLELAB_TZ`** (for example `Asia/Kolkata`). "Today", subscription renewals and reminders follow it.

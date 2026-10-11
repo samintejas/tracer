@@ -77,6 +77,15 @@ impl Store {
         for t in tags {
             qb.push(" AND EXISTS (SELECT 1 FROM tx_tags g WHERE g.tx_id = t.id AND g.tag = ").push_bind(t).push(")");
         }
+        let parties: Vec<String> = split(&f.parties).iter().map(|p| p.to_lowercase()).collect();
+        if !parties.is_empty() {
+            qb.push(" AND lower(t.party) IN (");
+            let mut sep = qb.separated(", ");
+            for p in parties {
+                sep.push_bind(p);
+            }
+            qb.push(")");
+        }
         if let Some(d) = f.from.as_deref().filter(|s| !s.is_empty()) {
             qb.push(" AND t.date >= ").push_bind(d);
         }
@@ -86,6 +95,7 @@ impl Store {
         if let Some(q) = f.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let like = format!("%{}%", q.to_lowercase().replace('%', "\\%").replace('_', "\\_"));
             qb.push(" AND (lower(t.description) LIKE ").push_bind(like.clone());
+            qb.push(" ESCAPE '\\' OR lower(t.party) LIKE ").push_bind(like.clone());
             qb.push(" ESCAPE '\\' OR lower(t.note) LIKE ").push_bind(like.clone());
             qb.push(" ESCAPE '\\' OR EXISTS (SELECT 1 FROM tx_tags g WHERE g.tx_id = t.id AND g.tag LIKE ").push_bind(like);
             qb.push(" ESCAPE '\\'))");
@@ -105,7 +115,7 @@ impl Store {
         let (total_in, total_out): (i64, i64) = (sums.get(0), sums.get(1));
 
         let mut qb = QueryBuilder::<Postgres>::new(
-            "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.note, t.transfer_id, t.created_by, \
+            "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.party, t.note, t.transfer_id, t.created_by, \
              (SELECT t2.account_id FROM transactions t2 WHERE t.transfer_id IS NOT NULL AND t2.transfer_id = t.transfer_id AND t2.id <> t.id LIMIT 1) AS counterpart_id, \
              (SELECT name FROM users u WHERE u.id = t.created_by) AS by_name, \
              (SELECT initials FROM users u WHERE u.id = t.created_by) AS by_initials",
@@ -121,7 +131,7 @@ impl Store {
             _ => format!("t.date {dir}, t.id {dir}"),
         };
         qb.push(format!(" ORDER BY {order} LIMIT "));
-        qb.push_bind(f.limit.unwrap_or(50).clamp(1, 500) as i64);
+        qb.push_bind(f.limit.unwrap_or(50).clamp(1, 1000) as i64);
         qb.push(" OFFSET ").push_bind(f.offset.unwrap_or(0) as i64);
         let rows = qb.build().fetch_all(&self.pool).await?;
         Ok(TxPage { items: self.hydrate(rows).await?, total, total_in, total_out })
@@ -166,6 +176,7 @@ impl Store {
                     date: r.get("date"),
                     description: r.get("description"),
                     tags: tags.remove(&id).unwrap_or_default(),
+                    party: r.get("party"),
                     note: r.get("note"),
                     counterpart_id: r.get("counterpart_id"),
                     transfer_id: r.get("transfer_id"),
@@ -184,7 +195,7 @@ impl Store {
     /// A transaction the person can see, whatever scope the caller holds: writes return what they made.
     pub(crate) async fn tx_for(&self, user_id: i64, id: i64) -> Result<Transaction> {
         let mut qb = QueryBuilder::<Postgres>::new(
-            "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.note, t.transfer_id, t.created_by, \
+            "SELECT t.id, t.account_id, t.kind, t.amount, t.date, t.description, t.party, t.note, t.transfer_id, t.created_by, \
              (SELECT t2.account_id FROM transactions t2 WHERE t.transfer_id IS NOT NULL AND t2.transfer_id = t.transfer_id AND t2.id <> t.id LIMIT 1) AS counterpart_id, \
              (SELECT name FROM users u WHERE u.id = t.created_by) AS by_name, \
              (SELECT initials FROM users u WHERE u.id = t.created_by) AS by_initials \
@@ -219,12 +230,13 @@ impl Store {
             tags.push(if signed > 0 { "income".into() } else { "other".into() });
         }
         let mut db = self.pool.begin().await?;
-        let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        let id = sqlx::query("INSERT INTO transactions (account_id, kind, amount, date, description, party, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
             .bind(b.account_id)
             .bind(b.kind.as_str())
             .bind(signed)
             .bind(&date)
             .bind(clean(&b.description))
+            .bind(clean(&b.party))
             .bind(clean(&b.note))
             .bind(c.user_id)
             .fetch_one(&mut *db)
@@ -370,6 +382,9 @@ impl Store {
             if let Some(d) = &b.description {
                 sqlx::query("UPDATE transactions SET description = $1 WHERE id = $2").bind(clean(d)).bind(leg.id).execute(&mut *db).await?;
             }
+            if let Some(m) = &b.party {
+                sqlx::query("UPDATE transactions SET party = $1 WHERE id = $2").bind(clean(m)).bind(leg.id).execute(&mut *db).await?;
+            }
             if let Some(n) = &b.note {
                 sqlx::query("UPDATE transactions SET note = $1 WHERE id = $2").bind(clean(n)).bind(leg.id).execute(&mut *db).await?;
             }
@@ -405,6 +420,18 @@ impl Store {
         Ok(n)
     }
 
+    /// Parties (merchants and payers) you have used, with how often, most used first. For the filter and suggestions.
+    pub async fn parties(&self, c: &Caller) -> Result<Vec<(String, i64)>> {
+        c.need("transactions")?;
+        let sql = format!(
+            "SELECT lower(t.party) AS p, COUNT(*) AS n FROM transactions t JOIN accounts a ON a.id = t.account_id \
+             WHERE {} AND t.party <> '' GROUP BY p ORDER BY n DESC, p",
+            visible(c.user_id)
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql)).fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
     /// Tags you have used, with how often, most used first. For suggestions.
     pub async fn tags(&self, c: &Caller) -> Result<Vec<(String, i64)>> {
         c.need("transactions")?;
@@ -430,15 +457,15 @@ impl Store {
             let bal = if a.kind.is_liability() { -a.balance } else { a.balance };
             out.push_str(&format!("{},{},{},{},{}\n", cell(&a.name), a.kind.as_str(), cell(&owners), vis, pebblelab_api::money::format_minor(bal)));
         }
-        out.push_str("\ntransactions\ndate,description,tags,account,kind,amount,by,note\n");
+        out.push_str("\ntransactions\ndate,description,party,tags,account,kind,amount,by,note\n");
         let mut offset = 0;
         loop {
             let page = self.transactions(c, TxFilter { limit: Some(500), offset: Some(offset), ..Default::default() }).await?;
             for t in &page.items {
                 let acct = accounts.iter().find(|a| a.id == t.account_id).map(|a| a.name.as_str()).unwrap_or("");
                 out.push_str(&format!(
-                    "{},{},{},{},{},{},{},{}\n",
-                    t.date, cell(&t.description), cell(&t.tags.join(" ")), cell(acct), t.kind.as_str(), pebblelab_api::money::format_minor(t.amount), cell(&t.created_by.name), cell(&t.note)
+                    "{},{},{},{},{},{},{},{},{}\n",
+                    t.date, cell(&t.description), cell(&t.party), cell(&t.tags.join(" ")), cell(acct), t.kind.as_str(), pebblelab_api::money::format_minor(t.amount), cell(&t.created_by.name), cell(&t.note)
                 ));
             }
             offset += 500;

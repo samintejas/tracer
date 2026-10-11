@@ -51,19 +51,19 @@ fn tools() -> Value {
          "asset_id": {"type": ["integer", "null"], "description": "link an investment to one of your assets, or null to unlink it (it keeps the value it had)"}}}},
       {"name": "list_transactions", "description": "Search transactions you can see, newest first, with a total for paging. accounts is a comma separated list of account ids; kinds is debit, credit and/or transfer; tags matches any.",
        "inputSchema": {"type": "object", "properties": {
-         "q": {"type": "string", "description": "substring of description, note or a tag"}, "account_id": id, "accounts": s, "member_id": id,
-         "kinds": s, "tags": s, "collapse_transfers": {"type": "boolean", "description": "show each transfer once"}, "from": date, "to": date, "sort": {"type": "string", "enum": ["date", "description", "amount"]},
+         "q": {"type": "string", "description": "substring of description, party, note or a tag"}, "account_id": id, "accounts": s, "member_id": id,
+         "kinds": s, "tags": s, "parties": s, "collapse_transfers": {"type": "boolean", "description": "show each transfer once"}, "from": date, "to": date, "sort": {"type": "string", "enum": ["date", "description", "amount"]},
          "dir": {"type": "string", "enum": ["asc", "desc"]}, "limit": id, "offset": id}}},
       {"name": "add_transaction", "description": format!("Record money out (debit) or in (credit) on an account you own. A credit-card purchase is a debit on the card and raises what is owed. To move money between accounts, or pay a card or loan, use transfer_money instead. {NOTE}"),
        "inputSchema": {"type": "object", "required": ["account_id", "kind", "amount"], "properties": {
          "account_id": id, "kind": {"type": "string", "enum": ["debit", "credit"]}, "amount": amount,
-         "description": s, "tags": tags, "note": s, "date": date}}},
+         "description": s, "party": {"type": "string", "description": "the merchant paid (debit) or who paid you (credit), e.g. swiggy"}, "tags": tags, "note": s, "date": date}}},
       {"name": "transfer_money", "description": format!("Move money between two accounts as two linked transactions (pay a card or loan, fund an investment, top up savings). Both balances update. {NOTE}"),
        "inputSchema": {"type": "object", "required": ["from_account_id", "to_account_id", "amount"], "properties": {
          "from_account_id": id, "to_account_id": id, "amount": amount, "description": s, "tags": tags, "note": s, "date": date}}},
       {"name": "update_transaction", "description": "Edit a transaction; for a transfer both legs change. Pass a positive amount: the direction stays.",
        "inputSchema": {"type": "object", "required": ["transaction_id"], "properties": {
-         "transaction_id": id, "amount": amount, "description": s, "tags": tags, "note": s, "date": date, "account_id": id}}},
+         "transaction_id": id, "amount": amount, "description": s, "party": s, "tags": tags, "note": s, "date": date, "account_id": id}}},
       {"name": "delete_transaction", "description": "Delete a transaction (both legs if it is a transfer).",
        "inputSchema": {"type": "object", "required": ["transaction_id"], "properties": {"transaction_id": id}}},
       {"name": "list_subscriptions", "description": format!("List your subscriptions: standing charges on an account. When a renewal date arrives a transaction is added and the date moves on a month or a year. {NOTE}"),

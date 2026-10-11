@@ -21,6 +21,7 @@ fn spend(account_id: i64, amount: i64, desc: &str, tags: &[&str]) -> NewTransact
         date: None,
         description: desc.into(),
         tags: tags.iter().map(|t| t.to_string()).collect(),
+        party: String::new(),
         note: String::new(),
     }
 }
@@ -192,7 +193,7 @@ async fn loans_dues_and_ask() {
     assert_eq!(ins.owed, loan.balance + 38_920_00);
     assert_eq!(ins.months.len(), 6);
     assert_eq!(ins.months.last().unwrap().spending, 500_00);
-    assert!((22..=28).contains(&ins.days.len()));
+    assert!((28..=31).contains(&ins.days.len()));
     // the card is due on the 18th: a reminder appears only within three days of it
     let notes = s.notifications(&c).await.unwrap();
     let due_soon = (chrono::NaiveDate::parse_from_str(&ins.dues.iter().find(|d| d.account_id == card.id).unwrap().date, "%Y-%m-%d").unwrap() - now).num_days() <= 3;

@@ -398,6 +398,9 @@ pub struct Transaction {
     pub date: String,
     pub description: String,
     pub tags: Vec<String>,
+    /// The merchant paid (money out) or whoever paid you (money in).
+    #[serde(default)]
+    pub party: String,
     #[serde(default)]
     pub note: String,
     /// The other account of a transfer.
@@ -421,6 +424,8 @@ pub struct NewTransaction {
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub party: String,
     #[serde(default)]
     pub note: String,
 }
@@ -448,6 +453,7 @@ pub struct UpdateTransaction {
     pub date: Option<String>,
     pub description: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub party: Option<String>,
     pub note: Option<String>,
     pub account_id: Option<i64>,
     /// `debit` or `credit`, to turn money out into money in or back. Not for transfers.
@@ -465,9 +471,11 @@ pub struct TxFilter {
     pub kinds: Option<String>,
     /// Comma separated tags; a transaction matches when it has all of them.
     pub tags: Option<String>,
+    /// Comma separated parties (merchant or payer); a transaction matches any of them.
+    pub parties: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
-    /// Substring of description, note or a tag.
+    /// Substring of description, party, note or a tag.
     pub q: Option<String>,
     /// Show each transfer once (its outgoing leg) instead of as two rows.
     pub collapse_transfers: Option<bool>,
@@ -541,7 +549,7 @@ pub struct Insights {
     pub categories: Vec<CategoryTotal>,
     /// The last six months.
     pub months: Vec<MonthFlow>,
-    /// Daily spending from the monday three weeks before this week's, up to today.
+    /// Daily spending for every day of the current month; days after today are zero.
     pub days: Vec<DayTotal>,
     pub dues: Vec<Due>,
     /// What things you own outside your accounts (homes, vehicles, gold) are worth now. Already part of

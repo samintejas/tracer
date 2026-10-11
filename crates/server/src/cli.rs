@@ -230,6 +230,9 @@ pub enum TxCmd {
         tag: Vec<String>,
         #[arg(long)]
         date: Option<String>,
+        /// The merchant paid, or who paid you.
+        #[arg(long, alias = "merchant")]
+        party: Option<String>,
         #[arg(long)]
         note: Option<String>,
     },
@@ -520,7 +523,7 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
         Cmd::Tx(t) => {
             let c = caller(&s, &cli.who).await?;
             match t {
-                TxCmd::Add { account: what, amount: amt, description, credit, tag, date, note } => {
+                TxCmd::Add { account: what, amount: amt, description, credit, tag, date, party, note } => {
                     let a = account(&s, &c, &what).await?;
                     let tx = s
                         .add_transaction(&c, NewTransaction {
@@ -530,6 +533,7 @@ pub async fn run(cli: Cli, s: Store) -> Result<(), Error> {
                             date,
                             description: description.join(" "),
                             tags: tag,
+                            party: party.unwrap_or_default(),
                             note: note.unwrap_or_default(),
                         })
                         .await?;

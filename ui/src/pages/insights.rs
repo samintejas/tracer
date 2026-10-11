@@ -109,14 +109,19 @@ fn Dash(i: Insights, scope_label: String) -> impl IntoView {
     let cats: Vec<(String, i64, f32)> = i.categories.iter().enumerate().map(|(k, c)| (c.tag.clone(), c.total, (1.0 - k as f32 * 0.16).max(0.18))).collect();
     let cat_aria = cats.iter().map(|c| format!("{} {}", c.0, money(c.1))).collect::<Vec<_>>().join(", ");
 
-    // ---- spending rhythm: four weeks, monday first; days after today stay empty
+    // ---- spending rhythm: this month as a calendar, monday first; days after today stay empty
     let day_max = i.days.iter().map(|d| d.total).max().unwrap_or(0).max(1) as f64;
     let today = fmt::today();
-    let mut heat: Vec<(String, f64, bool)> = i.days.iter().map(|d| {
+    let lead = i.days.first().map(|d| weekday_monday(&d.date)).unwrap_or(0);
+    let mut heat: Vec<(String, f64, bool)> = vec![(String::new(), 0.0, false); lead];
+    heat.extend(i.days.iter().map(|d| {
+        if d.date > today {
+            return (String::new(), 0.0, false);
+        }
         let title = format!("{}: {}", fmt::day(&d.date), if d.total > 0 { money(d.total) } else { "nothing spent".into() });
         (title, if d.total > 0 { 0.25 + 0.75 * d.total as f64 / day_max } else { 0.0 }, d.date == today)
-    }).collect();
-    heat.resize(28, (String::new(), 0.0, false));
+    }));
+    heat.resize(heat.len().div_ceil(7) * 7, (String::new(), 0.0, false));
     let spend_days = i.days.iter().filter(|d| d.total > 0).count();
     let heat_note = match i.days.iter().max_by_key(|d| d.total).filter(|d| d.total > 0) {
         Some(d) => format!("biggest day: {}: {}", fmt::day(&d.date), money(d.total)),
@@ -218,9 +223,9 @@ fn Dash(i: Insights, scope_label: String) -> impl IntoView {
             </section>
 
             <section class="d-card" aria-labelledby="c-heat">
-                <header class="d-card__head"><h2 class="d-card__title" id="c-heat">"spending rhythm"</h2><span class="d-card__meta">"last 4 weeks, by day"</span></header>
+                <header class="d-card__head"><h2 class="d-card__title" id="c-heat">"spending rhythm"</h2><span class="d-card__meta">"this month, by day"</span></header>
                 <div class="d-card__body" style="display:flex;flex-direction:column;gap:12px">
-                    <div role="img" aria-label=format!("spending by day for the last four weeks. {spend_days} days with spending.") style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px">
+                    <div role="img" aria-label=format!("spending by day for this month. {spend_days} days with spending.") style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px">
                         {["m", "t", "w", "t", "f", "s", "s"].into_iter().map(|d| view! { <span style="color:var(--text-secondary);font-size:var(--font-size-xs);text-align:center">{d}</span> }).collect_view()}
                         {heat.into_iter().map(|(title, o, is_today)| view! {
                             <span title=title style=format!("position:relative;height:26px;background:var(--bg-inset);outline:{}", if is_today { "1px solid var(--border-strong)" } else { "none" })>
@@ -265,4 +270,14 @@ fn Dash(i: Insights, scope_label: String) -> impl IntoView {
             </section>
         </div>
     }
+}
+
+/// Days since monday (0..=6) of a `YYYY-MM-DD` date.
+fn weekday_monday(date: &str) -> usize {
+    let mut p = date.split('-').filter_map(|x| x.parse::<i32>().ok());
+    let (y, m, d) = (p.next().unwrap_or(1970), p.next().unwrap_or(1), p.next().unwrap_or(1));
+    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if m < 3 { y - 1 } else { y };
+    let sunday_first = (y + y / 4 - y / 100 + y / 400 + T[(m - 1).clamp(0, 11) as usize] + d).rem_euclid(7);
+    ((sunday_first + 6) % 7) as usize
 }
